@@ -106,7 +106,7 @@ describe("FreshRSS list_fonts helpers", function()
         assert.is_false(ListFonts.maybeShowMissingHint(function() end, {}))
     end)
 
-    it("restores fontmap and evicts remapped faces from Font.faces", function()
+    it("restores fontmap and fallbacks without evicting cached faces", function()
         package.loaded["ui/font"] = nil
         local latin_path = os.tmpname()
         local guj_path = os.tmpname()
@@ -136,8 +136,9 @@ describe("FreshRSS list_fonts helpers", function()
         ListFonts.restore()
         assert.equals("NotoSans-Regular.ttf", Font.fontmap.smallinfofont)
         assert.equals("NotoSansCJKsc-Regular.otf", Font.fallbacks[2])
-        assert.is_nil(Font.faces[latin_path .. "22"])
-        assert.is_nil(Font.faces[guj_path .. "22"])
+        -- Cached face entries must stay valid for widgets still holding face_obj refs.
+        assert.is_not_nil(Font.faces[latin_path .. "22"])
+        assert.is_not_nil(Font.faces[guj_path .. "22"])
         assert.is_nil(Font.faces["NotoSans-Regular.ttf22"].fallbacks)
         package.preload["ui/font"] = nil
         package.loaded["ui/font"] = nil

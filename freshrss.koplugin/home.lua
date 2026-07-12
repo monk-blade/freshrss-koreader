@@ -28,6 +28,23 @@ local Home = InputContainer:extend{
     plugin = nil,
 }
 
+---Empty input tables on widget subtrees (nil ges_events crashes InputContainer).
+local function neutralizeInputTree(widget, depth)
+    if not widget or (depth or 0) > 32 then return end
+    depth = (depth or 0) + 1
+    if widget.handleEvent then
+        widget.key_events = {}
+        widget.ges_events = {}
+    end
+    if widget.skip_paint ~= nil then
+        widget.skip_paint = true
+    end
+    local n = #(widget or {})
+    for i = 1, n do
+        neutralizeInputTree(widget[i], depth)
+    end
+end
+
 local CategoryChip = InputContainer:extend{
     name = "freshrss_category_chip",
     fav = nil,
@@ -345,13 +362,7 @@ function Home:onClose()
 
     -- Stop accepting input while the nested Menu tears down (empty tables, not
     -- nil — InputContainer pairs() key_events / ges_events on every gesture).
-    self.key_events = {}
-    self.ges_events = {}
-    self.skip_paint = true
-    if self.list then
-        self.list.key_events = {}
-        self.list.skip_paint = true
-    end
+    neutralizeInputTree(self)
 
     local plugin = self.plugin
     self._close_plugin = plugin
@@ -365,7 +376,7 @@ function Home:onClose()
     UIManager:close(self, "flashui")
 
     -- Clear plugin refs after UIManager finishes close/repaint (font restore runs
-    -- in onCloseWidget, before the underlying UI refresh).
+    -- deferred in onCloseWidget, after the underlying UI refresh).
     if plugin then
         UIManager:nextTick(function()
             pcall(function() plugin:onHomeClosed() end)
@@ -375,15 +386,21 @@ function Home:onClose()
 end
 
 function Home:onCloseWidget()
-    -- UIManager:close emits CloseWidget before removing us and refreshing
-    -- CoverBrowser. Restore fontmap here so that refresh never paints with our
-    -- remapped smallinfofont, and never while the article Menu is still dirty.
+    -- Defer font restore until after UIManager removes us and the underlying
+    -- FileManager/CoverBrowser repaints. Evicting Font.faces during that repaint
+    -- left bookshelf TextWidgets with dangling face_obj handles (FreeType crash
+    -- in crash log: freetype.lua:108 → bookshelf_widget paintTo).
     if self._restored_list_fonts then return end
     self._restored_list_fonts = true
     local plugin = self._close_plugin or self.plugin
-    if plugin and plugin.list_fonts then
-        pcall(function() plugin.list_fonts.restore() end)
-    end
+    UIManager:nextTick(function()
+        UIManager:nextTick(function()
+            -- Skip if home was reopened before deferred restore runs.
+            if plugin and plugin.list_fonts and not plugin.home then
+                pcall(function() plugin.list_fonts.restore() end)
+            end
+        end)
+    end)
 end
 
 return Home

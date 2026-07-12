@@ -208,39 +208,11 @@ local function clearFaceFallbackCaches(Font)
     end
 end
 
----Drop Font.faces entries whose realname/hash matches remapped session fonts.
----Stale FT sizes left in the global cache after remapping smallinfofont can
----crash CoverBrowser (and other menus) with FreeType FT_Load_Glyph errors.
-local function evictSessionFaces(Font)
-    if not Font or not Font.faces then return end
-    local drop = {}
-    if _session.latin_realname then
-        drop[_session.latin_realname] = true
-    end
-    if _session.injected_fallback then
-        drop[_session.injected_fallback] = true
-    end
-    if not next(drop) then
-        clearFaceFallbackCaches(Font)
-        return
-    end
-    for hash, face in pairs(Font.faces) do
-        local realname = face and face.realname
-        local should_drop = realname and drop[realname]
-        if not should_drop and type(hash) == "string" then
-            for name in pairs(drop) do
-                if hash:sub(1, #name) == name then
-                    should_drop = true
-                    break
-                end
-            end
-        end
-        if should_drop then
-            Font.faces[hash] = nil
-        elseif face then
-            face.fallbacks = nil
-        end
-    end
+---Invalidate fallback chains after fontmap/fallback list changes.
+---Do not nil Font.faces entries on restore: CoverBrowser/bookshelf TextWidgets
+---keep face_obj references and evicting the cache entry causes FreeType crashes.
+local function invalidateFaceFallbacks(Font)
+    clearFaceFallbackCaches(Font)
 end
 
 local function fontFileExists(path)
@@ -289,20 +261,13 @@ function ListFonts.apply()
         _session.injected_fallback = gujarati
     end
 
-    clearFaceFallbackCaches(Font)
-    -- Also drop cached Menu faces so size/face changes take effect cleanly.
-    if Font.faces then
-        for hash, _ in pairs(Font.faces) do
-            if type(hash) == "string" and hash:find(ListFonts.MENU_FACE, 1, true) then
-                Font.faces[hash] = nil
-            end
-        end
-    end
+    invalidateFaceFallbacks(Font)
     _session.applied = true
 end
 
 ---Restore fontmap / fallbacks after home closes.
----Must run before the underlying UI (e.g. CoverBrowser) paints again.
+---Runs deferred (after close repaint) so underlying menus never paint against
+---evicted face_obj handles still held by TextWidgets.
 function ListFonts.restore()
     if not _session.applied then return end
     local Font = require("ui/font")
@@ -312,15 +277,7 @@ function ListFonts.restore()
     if _session.injected_fallback then
         removeFallback(Font.fallbacks, _session.injected_fallback)
     end
-    evictSessionFaces(Font)
-    -- Evict any remaining Menu face sizes built against the remapped fontmap.
-    if Font.faces then
-        for hash, _ in pairs(Font.faces) do
-            if type(hash) == "string" and hash:find(ListFonts.MENU_FACE, 1, true) then
-                Font.faces[hash] = nil
-            end
-        end
-    end
+    invalidateFaceFallbacks(Font)
     _session.applied = false
     _session.saved_fontmap = nil
     _session.latin_realname = nil
