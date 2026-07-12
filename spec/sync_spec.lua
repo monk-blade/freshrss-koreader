@@ -223,4 +223,45 @@ describe("FreshRSS state synchronization", function()
         assert.equals("feed/42", article.feed_id)
         assert.same({ "user/-/label/News" }, article.labels)
     end)
+
+    it("prefetchImages uses Images.downloadMany with a job list", function()
+        local many_calls = {}
+        local Images = {
+            MAX_PARALLEL = 3,
+            ensureDirectory = function(dir) return dir end,
+            directory = function(root) return root .. "/images" end,
+            extractImageUrls = function(html)
+                if html:find("one") then return { "https://cdn/a.png" } end
+                if html:find("two") then return { "https://cdn/b.png", "https://cdn/a.png" } end
+                return {}
+            end,
+            normalizeUrl = function(url) return url end,
+            findCachedFilename = function() return nil end,
+            filenameForUrl = function(url)
+                return url:match("([^/]+)$")
+            end,
+            downloadMany = function(jobs, opts)
+                table.insert(many_calls, { jobs = jobs, opts = opts })
+                return {}, 2
+            end,
+        }
+        local settings = {
+            readSetting = function(_, key)
+                if key == "freshrss_viewer_show_images" then return true end
+                return nil
+            end,
+        }
+        local sync = Sync:new({ root = "/tmp/freshrss-cache" }, settings)
+        sync.images = Images
+        local stats = sync:prefetchImages({
+            { summary = { content = "<img one>" } },
+            { content = { content = "<img two>" } },
+        })
+        assert.equals(2, stats.downloaded)
+        assert.equals(1, #many_calls)
+        assert.equals(2, #many_calls[1].jobs)
+        assert.equals("https://cdn/a.png", many_calls[1].jobs[1].url)
+        assert.equals("https://cdn/b.png", many_calls[1].jobs[2].url)
+        assert.equals(3, many_calls[1].opts.max_parallel)
+    end)
 end)

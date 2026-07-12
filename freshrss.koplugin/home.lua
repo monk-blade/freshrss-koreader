@@ -2,22 +2,16 @@
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonTable = require("ui/widget/buttontable")
 local Device = require("device")
+local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Menu = require("ui/widget/menu")
+local Size = require("ui/size")
 local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local Screen = Device.screen
-
-local MODE_SHORT = {
-    unread = "Browse",
-    all = "All",
-    starred = "Starred",
-    feed = "Feeds",
-    label = "Categories",
-}
 
 local Home = InputContainer:extend{
     name = "freshrss_home",
@@ -39,15 +33,11 @@ function Home:init()
     end
 end
 
-function Home:browseButtonLabel()
-    local browse = self.plugin:browseState()
-    return MODE_SHORT[browse.mode or "unread"] or "Browse"
-end
-
 function Home:buildLayout()
     local plugin = self.plugin
     local width = self.dimen.w
 
+    -- Brand mark left (tap = sync). Compact TitleBar padding for e-ink density.
     self.title_bar = TitleBar:new{
         width = width,
         fullscreen = true,
@@ -55,9 +45,13 @@ function Home:buildLayout()
         with_bottom_line = true,
         title = plugin:menuTitle(),
         subtitle = plugin:menuSubtitle(),
-        title_multilines = true,
-        left_icon = plugin.icons:name("refresh"),
-        left_icon_size_ratio = 1,
+        title_face = Font:getFace("x_smalltfont"),
+        title_multilines = false,
+        title_top_padding = Size.padding.small,
+        title_subtitle_v_padding = Screen:scaleBySize(1),
+        bottom_v_padding = Size.padding.small,
+        left_icon = plugin.icons:name("freshrss"),
+        left_icon_size_ratio = 0.7,
         left_icon_tap_callback = function()
             plugin:requestSync()
         end,
@@ -65,22 +59,26 @@ function Home:buildLayout()
         show_parent = self,
     }
 
+    -- Icon-only action bar (KOReader Button is icon XOR text). Browse mode
+    -- stays visible in the title; icons keep the bar compact on e-ink.
+    local icons = plugin.icons
+    local action_icon_size = Screen:scaleBySize(22)
     self.action_buttons = ButtonTable:new{
         width = width,
         buttons = {
             {
-                {
-                    text = self:browseButtonLabel(),
+                icons:button("list_filter", {
+                    size = action_icon_size,
                     callback = function() plugin:showBrowsePicker() end,
-                },
-                {
-                    text = "Mark all",
+                }),
+                icons:button("check_circle", {
+                    size = action_icon_size,
                     callback = function() plugin:confirmMarkAllRead() end,
-                },
-                {
-                    text = "Settings",
+                }),
+                icons:button("settings", {
+                    size = action_icon_size,
                     callback = function() plugin:showSettingsMenu() end,
-                },
+                }),
             },
         },
         zero_sep = true,
@@ -95,6 +93,10 @@ function Home:buildLayout()
     end
 
     -- Nested Menu must not own Back / close: only Home TitleBar X (and Home Back) exits.
+    -- MenuItem always uses Font face "smallinfofont"; ListFonts remaps that + Gujarati fallback.
+    if plugin.list_fonts then
+        plugin.list_fonts.apply()
+    end
     self.list = Menu:new{
         title = "",
         no_title = true,
@@ -127,7 +129,7 @@ function Home:buildLayout()
     }
 end
 
--- Rebuild chrome after browse-mode / settings changes so button labels stay correct.
+-- Rebuild chrome after browse-mode / settings changes.
 function Home:reopen()
     local plugin = self.plugin
     UIManager:close(self)
@@ -137,6 +139,9 @@ function Home:reopen()
 end
 
 function Home:updateList()
+    if self.plugin and self.plugin.list_fonts then
+        self.plugin.list_fonts.apply()
+    end
     if self.list then
         self.list:switchItemTable("", self.plugin:buildItemTable())
     end
@@ -156,6 +161,13 @@ function Home:onClose()
     end
     UIManager:close(self)
     return true
+end
+
+function Home:onCloseWidget()
+    -- UIManager:close sends CloseWidget (not Close); restore Menu face remap here.
+    if self.plugin and self.plugin.list_fonts then
+        self.plugin.list_fonts.restore()
+    end
 end
 
 return Home

@@ -238,6 +238,7 @@ function ArticleViewer:init()
     self.region = Geom:new{ w = screen_w, h = screen_h }
     self.align = "center"
     self.callbacks = self.callbacks or {}
+    self.icons = self.icons or self.callbacks.icons
     self.font_size = Renderer.readFontSize()
     self.font_face = Renderer.readFontFace()
     self.line_height = Renderer.readLineHeight()
@@ -275,6 +276,38 @@ end
 
 function ArticleViewer:_actionButtons()
     local article = self.article or {}
+    local icons = self.icons
+    -- Single compact icon row (KOReader Button is icon XOR text). Disabled
+    -- prev/next dim via IconWidget; nav still uses stable callbacks.prev/next_id.
+    if icons then
+        local star_key = article.starred and "star_filled" or "star"
+        return {
+            {
+                icons:button("chevron_left", {
+                    enabled = self.callbacks.prev_id ~= nil,
+                    callback = function()
+                        if self.callbacks.on_prev then self.callbacks.on_prev() end
+                    end,
+                }),
+                icons:button("circle", {
+                    callback = function()
+                        if self.callbacks.on_unread then self.callbacks.on_unread() end
+                    end,
+                }),
+                icons:button(star_key, {
+                    callback = function()
+                        if self.callbacks.on_star then self.callbacks.on_star() end
+                    end,
+                }),
+                icons:button("chevron_right", {
+                    enabled = self.callbacks.next_id ~= nil,
+                    callback = function()
+                        if self.callbacks.on_next then self.callbacks.on_next() end
+                    end,
+                }),
+            },
+        }
+    end
     return {
         {
             {
@@ -294,13 +327,13 @@ function ArticleViewer:_actionButtons()
         },
         {
             {
-                text = "Mark unread",
+                text = "Unread",
                 callback = function()
                     if self.callbacks.on_unread then self.callbacks.on_unread() end
                 end,
             },
             {
-                text = article.starred and "★ Unfavorite" or "☆ Favorite",
+                text = article.starred and "★ Fav" or "☆ Fav",
                 callback = function()
                     if self.callbacks.on_star then self.callbacks.on_star() end
                 end,
@@ -349,7 +382,11 @@ function ArticleViewer:build()
         subtitle = subtitle,
         title_multilines = true,
         with_bottom_line = true,
+        title_top_padding = Size.padding.small,
+        title_subtitle_v_padding = Screen:scaleBySize(1),
+        bottom_v_padding = Size.padding.small,
         left_icon = "appbar.menu",
+        left_icon_size_ratio = 0.7,
         left_icon_tap_callback = function()
             self:onShowViewSettings()
         end,
@@ -722,9 +759,11 @@ function ArticleViewer:onCloseWidget()
 end
 
 function Renderer:articleWidget(article, callbacks)
+    callbacks = callbacks or {}
     return ArticleViewer:new{
         article = article,
-        callbacks = callbacks or {},
+        callbacks = callbacks,
+        icons = callbacks.icons,
     }
 end
 

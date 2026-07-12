@@ -145,4 +145,139 @@ describe("FreshRSS images helpers", function()
         local out = Images.rewriteHtml(html, { ["https://cdn/real.png"] = "deadbeef.png" })
         assert.truthy(out:find('src="deadbeef.png"', 1, true))
     end)
+
+    it("exposes a bounded parallel download limit", function()
+        assert.are.equal(3, Images.MAX_PARALLEL)
+    end)
+
+    it("downloadMany runs jobs serially when requested and reports progress", function()
+        local calls = {}
+        local progress = {}
+        local orig = Images.downloadOne
+        Images.downloadOne = function(url, dir, filename)
+            table.insert(calls, { url = url, dir = dir, filename = filename })
+            return true, filename
+        end
+        local results, downloaded = Images.downloadMany({
+            { url = "https://a/1.png", dir = "/tmp", filename = "a.png" },
+            { url = "https://b/2.png", dir = "/tmp", filename = "b.png" },
+            { url = "https://c/3.png", dir = "/tmp", filename = "c.png" },
+        }, {
+            serial = true,
+            on_progress = function(done, total, result)
+                table.insert(progress, { done = done, total = total, ok = result.ok })
+            end,
+        })
+        Images.downloadOne = orig
+        assert.are.equal(3, #calls)
+        assert.are.equal(3, downloaded)
+        assert.are.equal(3, #results)
+        assert.is_true(results[1].ok)
+        assert.are.equal("a.png", results[1].filename)
+        assert.are.equal(3, #progress)
+        assert.are.equal(3, progress[3].total)
+    end)
+
+    it("downloadMany respects max_success in serial mode", function()
+        local calls = 0
+        local orig = Images.downloadOne
+        Images.downloadOne = function(url, dir, filename)
+            calls = calls + 1
+            return true, filename
+        end
+        local results, downloaded = Images.downloadMany({
+            { url = "https://a/1.png", dir = "/tmp", filename = "a.png" },
+            { url = "https://b/2.png", dir = "/tmp", filename = "b.png" },
+            { url = "https://c/3.png", dir = "/tmp", filename = "c.png" },
+        }, { serial = true, max_success = 2 })
+        Images.downloadOne = orig
+        assert.are.equal(2, calls)
+        assert.are.equal(2, downloaded)
+        assert.is_true(results[1].ok)
+        assert.is_true(results[2].ok)
+        assert.is_false(results[3].ok)
+    end)
+
+    it("prepare uses downloadMany for missing images", function()
+        local seen = {}
+        local orig_many = Images.downloadMany
+        Images.downloadMany = function(jobs, opts)
+            seen.jobs = jobs
+            seen.opts = opts
+            local results = {}
+            for i, job in ipairs(jobs) do
+                results[i] = { ok = true, url = job.url, filename = job.filename }
+            end
+            return results, #results
+        end
+        local html = [[<img src="https://a/1.png"><img src="https://b/2.jpg">]]
+        local map, dir, downloaded, missing = Images.prepare(html, {
+            data_dir = "/tmp/freshrss-img-test",
+            download = true,
+            is_online = true,
+            serial = true,
+        })
+        Images.downloadMany = orig_many
+        assert.are.equal(2, #seen.jobs)
+        assert.are.equal(2, downloaded)
+        assert.are.equal(0, missing)
+        assert.truthy(map["https://a/1.png"])
+        assert.truthy(map["https://b/2.jpg"])
+        assert.truthy(dir:find("images", 1, true))
+    end)
+
+    it("downloadMany falls back to serial when parallel yields zero successes", function()
+        local serial_calls = 0
+        local orig_one = Images.downloadOne
+        Images.downloadOne = function(url, dir, filename)
+            serial_calls = serial_calls + 1
+            return true, filename
+        end
+        local results, downloaded = Images.downloadMany({
+            { url = "https://a/1.png", dir = "/tmp", filename = "a.png" },
+            { url = "https://b/2.png", dir = "/tmp", filename = "b.png" },
+        }, { max_parallel = 3 })
+        Images.downloadOne = orig_one
+        -- Parallel either errors/returns 0 (then serial) or is unavailable (serial).
+        assert.are.equal(2, serial_calls)
+        assert.are.equal(2, downloaded)
+        assert.is_true(results[1].ok)
+        assert.is_true(results[2].ok)
+    end)
+
+    it("absoluteDirectory keeps absolute paths unchanged", function()
+        assert.are.equal("/tmp/freshrss/images", Images.absoluteDirectory("/tmp/freshrss/images"))
+    end)
+
+    it("prepare prefers on-disk filename after extension correction", function()
+        local data_dir = "/tmp/freshrss-prepare-ext"
+        os.execute("rm -rf " .. data_dir)
+        local html = [[<img src="https://cdn/pic.jpg">]]
+        local norm = "https://cdn/pic.jpg"
+        local preferred = Images.filenameForUrl(norm)
+        local base = preferred:match("^(.*)%.[^%.]+$")
+        local corrected = base .. ".png"
+        local orig_many = Images.downloadMany
+        Images.downloadMany = function(jobs)
+            local imgdir = jobs[1].dir
+            local path = imgdir .. "/" .. corrected
+            local f = assert(io.open(path, "wb"))
+            f:write("\x89PNG\r\n\x1a\nxxxx")
+            f:close()
+            return { { ok = true, url = jobs[1].url, filename = corrected } }, 1
+        end
+        local map, out_dir, downloaded = Images.prepare(html, {
+            data_dir = data_dir,
+            download = true,
+            is_online = true,
+            serial = true,
+        })
+        Images.downloadMany = orig_many
+        assert.are.equal(1, downloaded)
+        assert.are.equal(corrected, map[norm])
+        local rewritten = Images.rewriteHtml(html, map)
+        assert.truthy(rewritten:find('src="' .. corrected .. '"', 1, true))
+        assert.falsy(rewritten:find("%[image%]"))
+        assert.truthy(out_dir:find("images", 1, true))
+    end)
 end)

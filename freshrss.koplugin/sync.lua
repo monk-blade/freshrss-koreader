@@ -152,7 +152,7 @@ function Sync:storeStreamItems(items)
     return stored
 end
 
----Prefetch article images during sync (capped globally).
+---Prefetch article images during sync (capped globally, bounded parallel downloads).
 function Sync:prefetchImages(items, on_progress)
     local Images = self.images
     if not Images then return { downloaded = 0 } end
@@ -162,30 +162,44 @@ function Sync:prefetchImages(items, on_progress)
     local data_dir = self.cache and self.cache.root or ""
     if data_dir == "" then return { downloaded = 0 } end
     local dir = Images.ensureDirectory(Images.directory(data_dir))
-    local total_downloaded = 0
-    local n_items = #items
+    local jobs = {}
+    local seen = {}
 
-    for i, raw in ipairs(items) do
-        if total_downloaded >= MAX_SYNC_IMAGES then break end
+    for _, raw in ipairs(items) do
+        if #jobs >= MAX_SYNC_IMAGES then break end
         local html = raw.summary and raw.summary.content or raw.content and raw.content.content or ""
         if html ~= "" then
             for _, url in ipairs(Images.extractImageUrls(html)) do
-                if total_downloaded >= MAX_SYNC_IMAGES then break end
+                if #jobs >= MAX_SYNC_IMAGES then break end
                 local norm = Images.normalizeUrl(url)
-                if not Images.findCachedFilename(dir, norm) then
-                    local filename = Images.filenameForUrl(norm)
-                    if Images.downloadOne(norm, dir, filename) then
-                        total_downloaded = total_downloaded + 1
-                    end
+                if not seen[norm] and not Images.findCachedFilename(dir, norm) then
+                    seen[norm] = true
+                    jobs[#jobs + 1] = {
+                        url = norm,
+                        dir = dir,
+                        filename = Images.filenameForUrl(norm),
+                    }
                 end
             end
         end
-        if n_items > 0 and i % 5 == 0 then
-            report(on_progress, "images", 0.92 + 0.06 * (i / n_items))
-        end
     end
+
+    if #jobs == 0 then
+        report(on_progress, "images", 0.98)
+        return { downloaded = 0 }
+    end
+
+    local _, total_downloaded = Images.downloadMany(jobs, {
+        max_parallel = Images.MAX_PARALLEL,
+        max_success = MAX_SYNC_IMAGES,
+        on_progress = function(done, total)
+            if total > 0 then
+                report(on_progress, "images", 0.92 + 0.06 * (done / total))
+            end
+        end,
+    })
     report(on_progress, "images", 0.98)
-    return { downloaded = total_downloaded }
+    return { downloaded = total_downloaded or 0 }
 end
 
 function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)

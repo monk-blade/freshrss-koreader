@@ -6,15 +6,28 @@ local Icons = {}
 Icons.__index = Icons
 
 local ICON_FILES = {
+    freshrss = "freshrss.svg",
     refresh = "refresh.svg",
     star = "star.svg",
+    star_filled = "star-filled.svg",
     book_open = "book-open.svg",
     settings = "settings.svg",
     inbox = "inbox.svg",
     wifi_off = "wifi-off.svg",
     circle = "circle.svg",
     check_circle = "check-circle.svg",
+    chevron_left = "chevron-left.svg",
+    chevron_right = "chevron-right.svg",
+    list_filter = "list-filter.svg",
 }
+
+local function buttonIconSize()
+    local ok, Device = pcall(require, "device")
+    if ok and Device and Device.screen then
+        return Device.screen:scaleBySize(24)
+    end
+    return 24
+end
 
 function Icons:new(plugin_dir)
     local o = setmetatable({
@@ -31,9 +44,31 @@ function Icons:path(key)
     return self.assets_dir .. "/" .. file
 end
 
--- IconWidget / TitleBar name (looked up under DataStorage/icons/).
+-- IconWidget / TitleBar / Button name (looked up under DataStorage/icons/).
 function Icons:name(key)
     return "freshrss." .. key:gsub("_", "-")
+end
+
+-- ButtonTable entry helper: icon-only action with shared size across home/viewer.
+function Icons:button(key, opts)
+    opts = opts or {}
+    local size = opts.size or buttonIconSize()
+    local entry = {
+        icon = self:name(key),
+        icon_width = size,
+        icon_height = size,
+        callback = opts.callback,
+    }
+    if opts.enabled ~= nil then
+        entry.enabled = opts.enabled
+    end
+    if opts.hold_callback then
+        entry.hold_callback = opts.hold_callback
+    end
+    if opts.allow_hold_when_disabled then
+        entry.allow_hold_when_disabled = opts.allow_hold_when_disabled
+    end
+    return entry
 end
 
 function Icons:install()

@@ -4,8 +4,11 @@ local Images = {}
 
 Images.MAX_IMAGES = 10
 Images.MAX_BYTES = 1024 * 1024
+Images.MAX_PARALLEL = 3
 Images.CONNECT_TIMEOUT = 5
 Images.TOTAL_TIMEOUT = 12
+Images.SELECT_TIMEOUT = 0.2
+Images.MAX_REDIRECTS = 5
 
 local VALID_EXT = {
     jpg = true,
@@ -245,6 +248,21 @@ function Images.directory(data_dir)
     return base:gsub("/+$", "") .. "/images"
 end
 
+---Resolve image dir to an absolute path for MuPDF html_resource_directory.
+function Images.absoluteDirectory(dir)
+    dir = tostring(dir or "")
+    if dir == "" then return dir end
+    if dir:sub(1, 1) == "/" then return dir end
+    local lfs = require("libs/libkoreader-lfs")
+    local cwd = lfs.currentdir and lfs.currentdir() or nil
+    if not cwd or cwd == "" then return dir end
+    if dir == "." then return cwd end
+    if dir:sub(1, 2) == "./" then
+        return cwd:gsub("/+$", "") .. "/" .. dir:sub(3)
+    end
+    return cwd:gsub("/+$", "") .. "/" .. dir
+end
+
 function Images.ensureDirectory(dir)
     local lfs = require("libs/libkoreader-lfs")
     if lfs.attributes(dir, "mode") ~= "directory" then
@@ -254,7 +272,7 @@ function Images.ensureDirectory(dir)
         end
         lfs.mkdir(dir)
     end
-    return dir
+    return Images.absoluteDirectory(dir)
 end
 
 function Images.isCached(dir, filename)
@@ -364,6 +382,679 @@ function Images.downloadOne(url, dir, filename)
     return finalizeDownloadedFile(tmp, path, filename, dir, headers)
 end
 
+local pumpBodyData
+
+local function closeJobSocket(job)
+    if job.sock then
+        pcall(function() job.sock:close() end)
+        job.sock = nil
+    end
+end
+
+local function failJob(job)
+    if job.file then
+        pcall(function() job.file:close() end)
+        job.file = nil
+    end
+    if job.tmp then
+        os.remove(job.tmp)
+        job.tmp = nil
+    end
+    closeJobSocket(job)
+    job.ok = false
+    job.saved = nil
+    job.state = "done"
+    job.want_read = false
+    job.want_write = false
+end
+
+local function succeedJob(job, headers)
+    if job.file then
+        pcall(function() job.file:close() end)
+        job.file = nil
+    end
+    closeJobSocket(job)
+    local path = job.dir .. "/" .. job.filename
+    local ok, saved = finalizeDownloadedFile(job.tmp, path, job.filename, job.dir, headers)
+    job.tmp = nil
+    job.ok = ok and true or false
+    job.saved = ok and (saved or job.filename) or nil
+    if not ok then
+        job.ok = false
+        job.saved = nil
+    end
+    job.state = "done"
+    job.want_read = false
+    job.want_write = false
+end
+
+local function jobTimedOut(job)
+    return (os.time() - (job.started_at or os.time())) > Images.TOTAL_TIMEOUT
+end
+
+---LuaSocket uses "timeout"; LuaSec non-blocking SSL uses wantread/wantwrite.
+local function isWouldBlock(err)
+    return err == "timeout" or err == "wantread" or err == "wantwrite"
+end
+
+local function applyWouldBlock(job, err)
+    if err == "wantread" then
+        job.want_read = true
+        job.want_write = false
+    elseif err == "wantwrite" then
+        job.want_read = false
+        job.want_write = true
+    end
+    -- "timeout" keeps existing want_read/want_write interest.
+end
+
+local function parseRequestUrl(raw_url)
+    local url_mod = require("socket.url")
+    local parsed = url_mod.parse(Images.normalizeUrl(raw_url))
+    if not parsed or not parsed.host then return nil end
+    local scheme = (parsed.scheme or "http"):lower()
+    if scheme ~= "http" and scheme ~= "https" then return nil end
+    local path = parsed.path or "/"
+    if parsed.query and parsed.query ~= "" then
+        path = path .. "?" .. parsed.query
+    end
+    local port = tonumber(parsed.port)
+    if not port then
+        port = scheme == "https" and 443 or 80
+    end
+    return {
+        host = parsed.host,
+        port = port,
+        path = path,
+        https = scheme == "https",
+        authority = parsed.authority or parsed.host,
+    }
+end
+
+local function beginJobConnect(job)
+    local parsed = parseRequestUrl(job.url)
+    if not parsed then
+        failJob(job)
+        return
+    end
+    job.host = parsed.host
+    job.port = parsed.port
+    job.path = parsed.path
+    job.https = parsed.https
+    job.authority = parsed.authority or parsed.host
+    job.send_buf = string.format(
+        "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: FreshRSS-KOReader\r\nAccept: image/*,*/*;q=0.8\r\nConnection: close\r\n\r\n",
+        parsed.path,
+        job.authority
+    )
+    job.hdr_buf = ""
+    job.body_buf = ""
+    job.bytes = 0
+    job.headers = {}
+    job.status_code = nil
+    job.body_mode = nil
+    job.chunk_state = nil
+    job.chunk_remain = 0
+    job.content_length = nil
+
+    local socket = require("socket")
+    local sock = socket.tcp()
+    if not sock then
+        failJob(job)
+        return
+    end
+    sock:settimeout(0)
+    job.sock = sock
+    job.state = "connect"
+    job.want_read = false
+    job.want_write = true
+    local ok, err = sock:connect(job.host, job.port)
+    if ok then
+        if job.https then
+            job.state = "ssl"
+            job.want_read = true
+            job.want_write = true
+        else
+            job.state = "send"
+            job.want_read = false
+            job.want_write = true
+        end
+    elseif err ~= "timeout" then
+        failJob(job)
+    end
+end
+
+local function startSslHandshake(job)
+    local ssl = require("ssl")
+    local wrapped, err = ssl.wrap(job.sock, {
+        mode = "client",
+        protocol = "any",
+        options = { "all", "no_sslv2", "no_sslv3", "no_tlsv1" },
+        verify = "none",
+    })
+    if not wrapped then
+        failJob(job)
+        return
+    end
+    pcall(function() wrapped:sni(job.host) end)
+    wrapped:settimeout(0)
+    job.sock = wrapped
+    job.state = "ssl"
+    job.want_read = true
+    job.want_write = true
+end
+
+local function pumpSsl(job)
+    if type(job.sock.dohandshake) ~= "function" then
+        startSslHandshake(job)
+        if job.state == "done" then return end
+    end
+    local ok, err = job.sock:dohandshake()
+    if ok then
+        job.state = "send"
+        job.want_read = false
+        job.want_write = true
+    elseif err == "wantread" then
+        job.want_read = true
+        job.want_write = false
+    elseif err == "wantwrite" then
+        job.want_read = false
+        job.want_write = true
+    else
+        failJob(job)
+    end
+end
+
+local function appendBody(job, data)
+    if not data or data == "" then return true end
+    job.bytes = job.bytes + #data
+    if job.bytes > Images.MAX_BYTES then
+        failJob(job)
+        return false
+    end
+    if not job.file:write(data) then
+        failJob(job)
+        return false
+    end
+    return true
+end
+
+local function openBodyFile(job)
+    local path = job.dir .. "/" .. job.filename
+    job.tmp = path .. ".tmp"
+    job.file = io.open(job.tmp, "wb")
+    if not job.file then
+        failJob(job)
+        return false
+    end
+    return true
+end
+
+local function handleRedirect(job)
+    local location = job.headers["location"]
+    if not location or location == "" then
+        failJob(job)
+        return
+    end
+    job.redirects = (job.redirects or 0) + 1
+    if job.redirects > Images.MAX_REDIRECTS then
+        failJob(job)
+        return
+    end
+    if location:sub(1, 1) == "/" then
+        local scheme = job.https and "https" or "http"
+        location = string.format("%s://%s%s", scheme, job.authority or job.host, location)
+    elseif not location:match("^https?://") then
+        failJob(job)
+        return
+    end
+    if job.file then
+        pcall(function() job.file:close() end)
+        job.file = nil
+    end
+    if job.tmp then
+        os.remove(job.tmp)
+        job.tmp = nil
+    end
+    closeJobSocket(job)
+    job.url = Images.normalizeUrl(location)
+    beginJobConnect(job)
+end
+
+local function finishHeaders(job)
+    local code = tonumber(job.status_code or 0) or 0
+    if code == 301 or code == 302 or code == 303 or code == 307 or code == 308 then
+        handleRedirect(job)
+        return
+    end
+    if code ~= 200 then
+        failJob(job)
+        return
+    end
+    if not openBodyFile(job) then return end
+
+    local te = tostring(job.headers["transfer-encoding"] or ""):lower()
+    local cl = tonumber(job.headers["content-length"] or "")
+    if te:find("chunked", 1, true) then
+        job.body_mode = "chunked"
+        job.chunk_state = "size"
+        job.chunk_remain = 0
+    elseif cl then
+        job.body_mode = "length"
+        job.content_length = cl
+        if cl == 0 then
+            succeedJob(job, job.headers)
+            return
+        end
+    else
+        job.body_mode = "close"
+    end
+    job.state = "body"
+    job.want_read = true
+    job.want_write = false
+    if job.body_buf ~= "" then
+        local leftover = job.body_buf
+        job.body_buf = ""
+        pumpBodyData(job, leftover)
+    end
+end
+
+local function parseHeaderBlock(job)
+    local block = job.hdr_buf
+    local status_line, rest = block:match("^(.-)\r\n(.*)$")
+    if not status_line then
+        failJob(job)
+        return
+    end
+    local code = status_line:match("^HTTP/%d%.%d%s+(%d+)")
+    job.status_code = tonumber(code or 0) or 0
+    job.headers = {}
+    for line in (rest or ""):gmatch("([^\r\n]+)") do
+        local name, value = line:match("^([^:]+):%s*(.*)$")
+        if name then
+            job.headers[name:lower()] = value
+        end
+    end
+    finishHeaders(job)
+end
+
+pumpBodyData = function(job, data)
+    if job.state == "done" then return end
+    if job.body_mode == "length" then
+        local need = job.content_length - job.bytes
+        if #data > need then data = data:sub(1, need) end
+        if not appendBody(job, data) then return end
+        if job.bytes >= job.content_length then
+            succeedJob(job, job.headers)
+        end
+        return
+    end
+    if job.body_mode == "close" then
+        appendBody(job, data)
+        return
+    end
+    -- chunked
+    job.body_buf = (job.body_buf or "") .. (data or "")
+    while job.state ~= "done" do
+        if job.chunk_state == "size" then
+            local line, rest = job.body_buf:match("^(.-)\r\n(.*)$")
+            if not line then return end
+            job.body_buf = rest or ""
+            local size = tonumber((line:match("^(%x+)") or ""), 16)
+            if not size then
+                failJob(job)
+                return
+            end
+            if size == 0 then
+                succeedJob(job, job.headers)
+                return
+            end
+            job.chunk_remain = size
+            job.chunk_state = "data"
+        elseif job.chunk_state == "data" then
+            if #job.body_buf < job.chunk_remain then return end
+            local chunk = job.body_buf:sub(1, job.chunk_remain)
+            job.body_buf = job.body_buf:sub(job.chunk_remain + 1)
+            if not appendBody(job, chunk) then return end
+            job.chunk_state = "crlf"
+        elseif job.chunk_state == "crlf" then
+            if #job.body_buf < 2 then return end
+            if job.body_buf:sub(1, 2) ~= "\r\n" then
+                failJob(job)
+                return
+            end
+            job.body_buf = job.body_buf:sub(3)
+            job.chunk_state = "size"
+        else
+            failJob(job)
+            return
+        end
+    end
+end
+
+local function pumpSend(job)
+    if job.send_buf == "" then
+        job.state = "headers"
+        job.want_read = true
+        job.want_write = false
+        return
+    end
+    local sent, err, partial = job.sock:send(job.send_buf)
+    if sent then
+        job.send_buf = job.send_buf:sub(sent + 1)
+        if job.send_buf == "" then
+            job.state = "headers"
+            job.want_read = true
+            job.want_write = false
+        else
+            job.want_read = false
+            job.want_write = true
+        end
+    elseif isWouldBlock(err) then
+        if type(partial) == "number" and partial > 0 then
+            job.send_buf = job.send_buf:sub(partial + 1)
+        end
+        applyWouldBlock(job, err)
+        if err == "timeout" then
+            job.want_read = false
+            job.want_write = true
+        end
+    else
+        failJob(job)
+    end
+end
+
+local function pumpHeaders(job)
+    local chunk, err, partial = job.sock:receive(8192)
+    local data = chunk or partial
+    if data and #data > 0 then
+        job.hdr_buf = job.hdr_buf .. data
+        local s, e = job.hdr_buf:find("\r\n\r\n", 1, true)
+        if s then
+            job.body_buf = job.hdr_buf:sub(e + 1)
+            job.hdr_buf = job.hdr_buf:sub(1, s - 1)
+            parseHeaderBlock(job)
+        else
+            job.want_read = true
+            job.want_write = false
+        end
+        return
+    end
+    if err == "closed" then
+        failJob(job)
+    elseif isWouldBlock(err) then
+        applyWouldBlock(job, err)
+        if err == "timeout" then
+            job.want_read = true
+            job.want_write = false
+        end
+    else
+        failJob(job)
+    end
+end
+
+local function pumpBody(job)
+    local chunk, err, partial = job.sock:receive(8192)
+    local data = chunk or partial
+    if data and #data > 0 then
+        pumpBodyData(job, data)
+        if job.state == "body" then
+            job.want_read = true
+            job.want_write = false
+        end
+        return
+    end
+    if err == "closed" then
+        if job.body_mode == "close" and job.bytes > 0 then
+            succeedJob(job, job.headers)
+        elseif job.body_mode == "length" and job.bytes >= (job.content_length or 0) then
+            succeedJob(job, job.headers)
+        else
+            failJob(job)
+        end
+    elseif isWouldBlock(err) then
+        applyWouldBlock(job, err)
+        if err == "timeout" then
+            job.want_read = true
+            job.want_write = false
+        end
+    else
+        failJob(job)
+    end
+end
+
+local function pumpConnect(job)
+    local ok, err = job.sock:connect(job.host, job.port)
+    if ok or err == "already connected" then
+        if job.https then
+            startSslHandshake(job)
+            if job.state == "ssl" then
+                pumpSsl(job)
+            end
+        else
+            job.state = "send"
+            job.want_read = false
+            job.want_write = true
+        end
+    elseif err ~= "timeout" then
+        -- Some stacks report nil after select once connected.
+        local peer = job.sock:getpeername()
+        if peer then
+            if job.https then
+                startSslHandshake(job)
+                if job.state == "ssl" then
+                    pumpSsl(job)
+                end
+            else
+                job.state = "send"
+                job.want_read = false
+                job.want_write = true
+            end
+        else
+            failJob(job)
+        end
+    end
+end
+
+local function pumpJob(job)
+    if job.state == "done" or jobTimedOut(job) then
+        if job.state ~= "done" then failJob(job) end
+        return
+    end
+    if job.state == "connect" then
+        pumpConnect(job)
+    elseif job.state == "ssl" then
+        pumpSsl(job)
+    elseif job.state == "send" then
+        pumpSend(job)
+    elseif job.state == "headers" then
+        pumpHeaders(job)
+    elseif job.state == "body" then
+        pumpBody(job)
+    end
+end
+
+local function downloadManySerial(jobs, opts)
+    local results = {}
+    local downloaded = 0
+    local max_success = opts.max_success
+    for i, job in ipairs(jobs) do
+        if max_success and downloaded >= max_success then
+            results[i] = { ok = false, url = job.url, filename = job.filename }
+        else
+            local ok, saved = Images.downloadOne(job.url, job.dir, job.filename)
+            results[i] = {
+                ok = ok and true or false,
+                url = job.url,
+                filename = ok and (saved or job.filename) or job.filename,
+            }
+            if ok then downloaded = downloaded + 1 end
+        end
+        if opts.on_progress then
+            opts.on_progress(i, #jobs, results[i])
+        end
+    end
+    return results, downloaded
+end
+
+---Try non-blocking socket.select pool; returns nil if LuaSocket unavailable.
+local function downloadManyParallel(jobs, opts)
+    local ok_socket, socket = pcall(require, "socket")
+    if not ok_socket or not socket or not socket.select then
+        return nil
+    end
+    local max_parallel = math.max(1, tonumber(opts.max_parallel) or Images.MAX_PARALLEL)
+    local max_success = opts.max_success
+    local results = {}
+    local downloaded = 0
+    local next_index = 1
+    local active = {}
+    local completed = 0
+    local total = #jobs
+
+    local function launch(index)
+        local src = jobs[index]
+        local job = {
+            index = index,
+            url = src.url,
+            dir = src.dir,
+            filename = src.filename,
+            redirects = 0,
+            started_at = os.time(),
+            state = "connect",
+        }
+        beginJobConnect(job)
+        if job.state == "done" then
+            results[index] = { ok = false, url = src.url, filename = src.filename }
+            completed = completed + 1
+            if opts.on_progress then
+                opts.on_progress(completed, total, results[index])
+            end
+            return nil
+        end
+        return job
+    end
+
+    local function finishActive(job)
+        results[job.index] = {
+            ok = job.ok and true or false,
+            url = jobs[job.index].url,
+            filename = job.ok and (job.saved or jobs[job.index].filename) or jobs[job.index].filename,
+        }
+        if job.ok then downloaded = downloaded + 1 end
+        completed = completed + 1
+        if opts.on_progress then
+            opts.on_progress(completed, total, results[job.index])
+        end
+    end
+
+    while completed < total do
+        while #active < max_parallel and next_index <= total do
+            if max_success and downloaded >= max_success then
+                for i = next_index, total do
+                    if not results[i] then
+                        results[i] = { ok = false, url = jobs[i].url, filename = jobs[i].filename }
+                        completed = completed + 1
+                        if opts.on_progress then
+                            opts.on_progress(completed, total, results[i])
+                        end
+                    end
+                end
+                next_index = total + 1
+                break
+            end
+            local job = launch(next_index)
+            next_index = next_index + 1
+            if job then
+                active[#active + 1] = job
+            end
+        end
+
+        if #active == 0 then
+            if next_index > total then break end
+        else
+            local recvt, sendt = {}, {}
+            for _, job in ipairs(active) do
+                if job.sock then
+                    if job.want_read then recvt[#recvt + 1] = job.sock end
+                    if job.want_write then sendt[#sendt + 1] = job.sock end
+                end
+            end
+            if #recvt > 0 or #sendt > 0 then
+                socket.select(recvt, sendt, Images.SELECT_TIMEOUT)
+            else
+                socket.sleep(Images.SELECT_TIMEOUT)
+            end
+
+            local still = {}
+            for _, job in ipairs(active) do
+                pumpJob(job)
+                if job.state == "done" then
+                    finishActive(job)
+                else
+                    still[#still + 1] = job
+                end
+            end
+            active = still
+        end
+    end
+
+    return results, downloaded
+end
+
+---Download many images with bounded concurrency (socket.select pool).
+---Each job: { url=, dir=, filename= }.
+---Falls back to serial downloadOne when LuaSocket is unavailable, opts.serial,
+---or the parallel path errors / yields no successes. Failed jobs after a partial
+---parallel run are retried serially so transient SSL/select issues don't stick.
+---@return table results, number downloaded
+function Images.downloadMany(jobs, opts)
+    opts = opts or {}
+    jobs = jobs or {}
+    if #jobs == 0 then return {}, 0 end
+
+    local max_parallel = tonumber(opts.max_parallel) or Images.MAX_PARALLEL
+    if opts.serial or max_parallel <= 1 then
+        return downloadManySerial(jobs, opts)
+    end
+
+    local results, downloaded
+    local ok = pcall(function()
+        results, downloaded = downloadManyParallel(jobs, opts)
+    end)
+    if not ok or results == nil then
+        return downloadManySerial(jobs, opts)
+    end
+    downloaded = downloaded or 0
+    if downloaded == 0 then
+        return downloadManySerial(jobs, opts)
+    end
+
+    local retry_jobs, retry_indices = {}, {}
+    for i, result in ipairs(results) do
+        if not (result and result.ok) then
+            retry_jobs[#retry_jobs + 1] = jobs[i]
+            retry_indices[#retry_indices + 1] = i
+        end
+    end
+    if #retry_jobs > 0 then
+        local retry_opts = {
+            max_success = opts.max_success and math.max(0, opts.max_success - downloaded) or nil,
+        }
+        if not retry_opts.max_success or retry_opts.max_success > 0 then
+            local retry_results = downloadManySerial(retry_jobs, retry_opts)
+            for j, retry_result in ipairs(retry_results) do
+                local idx = retry_indices[j]
+                results[idx] = retry_result
+                if retry_result and retry_result.ok then
+                    downloaded = downloaded + 1
+                end
+            end
+        end
+    end
+    return results, downloaded
+end
+
 ---Build url→filename map; download missing when requested and online.
 ---@return table url_to_filename, string resource_dir, number downloaded, number missing
 function Images.prepare(html, opts)
@@ -374,6 +1065,8 @@ function Images.prepare(html, opts)
     local downloaded = 0
     local missing = 0
     local want_download = opts.download ~= false and opts.is_online ~= false
+    local jobs = {}
+    local job_urls = {}
 
     for _, url in ipairs(urls) do
         local norm = Images.normalizeUrl(url)
@@ -382,15 +1075,28 @@ function Images.prepare(html, opts)
             map[norm] = cached
         elseif want_download then
             local filename = Images.filenameForUrl(norm)
-            local ok, saved = Images.downloadOne(norm, dir, filename)
-            if ok then
-                map[norm] = saved or filename
+            jobs[#jobs + 1] = { url = norm, dir = dir, filename = filename }
+            job_urls[#job_urls + 1] = norm
+        else
+            missing = missing + 1
+        end
+    end
+
+    if #jobs > 0 then
+        local results = Images.downloadMany(jobs, {
+            max_parallel = opts.max_parallel or Images.MAX_PARALLEL,
+            serial = opts.serial,
+            on_progress = opts.on_progress,
+        })
+        for i, result in ipairs(results) do
+            local norm = job_urls[i]
+            if result and result.ok then
+                -- Prefer on-disk name (handles magic-byte extension corrections).
+                map[norm] = Images.findCachedFilename(dir, norm) or result.filename
                 downloaded = downloaded + 1
             else
                 missing = missing + 1
             end
-        else
-            missing = missing + 1
         end
     end
     return map, dir, downloaded, missing
@@ -401,9 +1107,9 @@ function Images.cachedMap(html, data_dir)
     local dir = Images.directory(data_dir)
     local lfs_ok, lfs = pcall(require, "libs/libkoreader-lfs")
     local map = {}
-    if not lfs_ok then return map, dir end
+    if not lfs_ok then return map, Images.absoluteDirectory(dir) end
     if lfs.attributes(dir, "mode") ~= "directory" then
-        return map, dir
+        return map, Images.absoluteDirectory(dir)
     end
     for _, url in ipairs(Images.extractImageUrls(html)) do
         local norm = Images.normalizeUrl(url)
@@ -412,6 +1118,6 @@ function Images.cachedMap(html, data_dir)
             map[norm] = filename
         end
     end
-    return map, dir
+    return map, Images.absoluteDirectory(dir)
 end
 return Images

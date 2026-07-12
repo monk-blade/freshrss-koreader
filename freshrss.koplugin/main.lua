@@ -20,6 +20,8 @@ local Images = dofile(plugin_dir .. "/images.lua")
 local Icons = dofile(plugin_dir .. "/icons.lua")
 local Status = dofile(plugin_dir .. "/ui_status.lua")
 local Home = dofile(plugin_dir .. "/home.lua")
+local Nav = dofile(plugin_dir .. "/nav.lua")
+local ListFonts = dofile(plugin_dir .. "/list_fonts.lua")
 
 local Plugin = WidgetContainer:extend{
     name = "freshrss",
@@ -68,11 +70,13 @@ function Plugin:init()
     self.icons = Icons:new(plugin_dir)
     self.icons:install()
     Status:setIcons(self.icons)
+    self.list_fonts = ListFonts
     self.api_client = nil
     self.home = nil
     self.menu = nil -- alias to home.list when home is open
     self.settings_menu = nil
     self.queue_menu = nil
+    self.list_font_menu = nil
     self.browse_picker = nil
     self.viewer = nil
     self.syncing = false
@@ -395,7 +399,7 @@ function Plugin:buildItemTable()
         local subs = meta.subscriptions and meta.subscriptions.subscriptions or {}
         if #subs == 0 then
             table.insert(entries, {
-                text = "No feeds cached · tap Refresh",
+                text = "No feeds cached · tap the FreshRSS icon to sync",
                 select_enabled = false,
             })
         else
@@ -428,7 +432,7 @@ function Plugin:buildItemTable()
         end
         if #labels == 0 then
             table.insert(entries, {
-                text = "No categories cached · tap Refresh",
+                text = "No categories cached · tap the FreshRSS icon to sync",
                 select_enabled = false,
             })
         else
@@ -465,13 +469,14 @@ function Plugin:buildItemTable()
     end
 
     local items = self:listedArticles()
+    -- Dense e-ink glyphs: filled bullet = unread, hollow = read, star = favorite.
     local unread_mark = "● "
     local read_mark = "○ "
     for _, article in ipairs(items) do
         local marker = article.unread and unread_mark or read_mark
-        local star = article.starred and " ★" or ""
+        local star = article.starred and "★ " or ""
         table.insert(entries, {
-            text = marker .. articleTitle(article) .. star,
+            text = marker .. star .. articleTitle(article),
             mandatory = article.feed_title,
             callback = function() self:openArticle(article.id) end,
         })
@@ -479,8 +484,8 @@ function Plugin:buildItemTable()
     if #items == 0 then
         local offline = not NetworkMgr:isOnline()
         local empty_text = offline
-            and "No cached articles · offline. Connect and tap Refresh."
-            or "No cached articles. Tap Refresh to sync."
+            and "No cached articles · offline. Connect and tap the FreshRSS icon."
+            or "No cached articles. Tap the FreshRSS icon to sync."
         table.insert(entries, { text = empty_text, select_enabled = false })
     end
     return entries
@@ -551,6 +556,80 @@ function Plugin:showBrowsePicker()
     UIManager:show(self.browse_picker, "ui")
 end
 
+function Plugin:listFontLabel(kind)
+    local path
+    if kind == "gujarati" then
+        path = ListFonts.readGujaratiFont() or ListFonts.resolveGujaratiFont()
+        if not ListFonts.readGujaratiFont() and path then
+            return "List font (Gujarati): auto · " .. ListFonts.displayName(path)
+        end
+        return "List font (Gujarati): " .. ListFonts.displayName(path)
+    end
+    path = ListFonts.readLatinFont() or ListFonts.resolveLatinFont()
+    if not ListFonts.readLatinFont() and path then
+        return "List font (Latin): auto · " .. ListFonts.displayName(path)
+    end
+    return "List font (Latin): " .. ListFonts.displayName(path)
+end
+
+function Plugin:showListFontPicker(kind)
+    local FontList = require("fontlist")
+    local fonts = FontList:getFontList() or {}
+    local title = kind == "gujarati" and "List font (Gujarati)" or "List font (Latin)"
+    local current = kind == "gujarati" and ListFonts.readGujaratiFont() or ListFonts.readLatinFont()
+    local entries = {
+        {
+            text = "Default / auto" .. (not current and " ✓" or ""),
+            callback = function()
+                if kind == "gujarati" then
+                    ListFonts.saveGujaratiFont(nil)
+                else
+                    ListFonts.saveLatinFont(nil)
+                end
+                UIManager:close(self.list_font_menu)
+                self.list_font_menu = nil
+                ListFonts.apply()
+                if self.home then self.home:updateList() end
+                self:showSettingsMenu()
+            end,
+        },
+    }
+    for _, path in ipairs(fonts) do
+        local name = path:match("([^/]+)$") or path
+        local selected = current == path and " ✓" or ""
+        table.insert(entries, {
+            text = name .. selected,
+            callback = function()
+                if kind == "gujarati" then
+                    ListFonts.saveGujaratiFont(path)
+                else
+                    ListFonts.saveLatinFont(path)
+                end
+                UIManager:close(self.list_font_menu)
+                self.list_font_menu = nil
+                ListFonts.apply()
+                if self.home then self.home:updateList() end
+                self:showSettingsMenu()
+            end,
+        })
+    end
+    if self.list_font_menu then
+        UIManager:close(self.list_font_menu)
+    end
+    self.list_font_menu = Menu:new{
+        title = title,
+        item_table = entries,
+        is_popout = false,
+        is_borderless = true,
+        covers_fullscreen = true,
+        close_callback = function()
+            self.list_font_menu = nil
+            if self.settings_menu then self:showSettingsMenu() end
+        end,
+    }
+    UIManager:show(self.list_font_menu, "ui")
+end
+
 function Plugin:showSettingsMenu()
     local auto = self:autoRefreshEnabled()
     local unread_only = self:syncUnreadOnly()
@@ -582,6 +661,14 @@ function Plugin:showSettingsMenu()
                 self:cycleArticlesPerSync()
                 self:showSettingsMenu()
             end,
+        },
+        {
+            text = self:listFontLabel("latin"),
+            callback = function() self:showListFontPicker("latin") end,
+        },
+        {
+            text = self:listFontLabel("gujarati"),
+            callback = function() self:showListFontPicker("gujarati") end,
         },
         {
             text = string.format("Pending actions: %d", pending),
@@ -690,6 +777,7 @@ function Plugin:confirmMarkAllRead()
 end
 
 function Plugin:menuTitle()
+    -- Brand lives in the TitleBar icon; title is mode + unread count only.
     local browse = self:browseState()
     local mode = MODE_LABELS[browse.mode] or "FreshRSS"
     if browse.mode == "feed" and browse.feed_id then
@@ -697,20 +785,24 @@ function Plugin:menuTitle()
     elseif browse.mode == "label" and browse.label then
         mode = labelDisplayName(browse.label)
     end
-    return "FreshRSS  ·  " .. mode .. "  ·  " .. tostring(self.cache:unreadCount())
+    return mode .. "  ·  " .. tostring(self.cache:unreadCount())
 end
 
 function Plugin:menuSubtitle()
+    -- Sync filter / cap live in Settings; keep only a short last-sync clock.
     local last = self.settings:readSetting("freshrss_last_sync") or self.settings:readSetting("last_sync")
-    local filter = self:syncUnreadOnly() and "sync:unread" or "sync:all"
-    local cap = self:articlesPerSync()
     local pending = #self.cache:queuedActions()
     local pending_bit = pending > 0 and string.format(" · queue %d", pending) or ""
     if not last then
-        return string.format("Not synced yet · %s · cap %d%s", filter, cap, pending_bit)
+        return "Not synced" .. pending_bit
     end
-    return string.format("Last sync · %s · %s · cap %d%s",
-        os.date("%Y-%m-%d %H:%M", tonumber(last) or os.time()), filter, cap, pending_bit)
+    local ts = tonumber(last) or os.time()
+    local today = os.date("%Y-%m-%d")
+    local sync_day = os.date("%Y-%m-%d", ts)
+    if sync_day == today then
+        return os.date("%H:%M", ts) .. pending_bit
+    end
+    return os.date("%Y-%m-%d %H:%M", ts) .. pending_bit
 end
 
 function Plugin:onHomeClosed()
@@ -798,19 +890,26 @@ function Plugin:loadViewerImages(article, viewer)
     end
 end
 
-function Plugin:openArticle(id)
+function Plugin:openArticle(id, nav_ids)
     local article = self.cache:getArticle(id)
     if not article then return end
-    local ids = self:articleIds()
-    local index = 1
-    for i, aid in ipairs(ids) do
-        if tostring(aid) == tostring(id) then
-            index = i
-            break
-        end
+
+    -- Use a stable ordered snapshot for this viewer session. Opening marks the
+    -- article read; re-querying an unread browse list would drop it and break
+    -- Prev / shift Next / stale N/M indices.
+    local ids = nav_ids
+    if type(ids) ~= "table" then
+        ids = self:articleIds()
     end
-    local prev_id = ids[index - 1]
-    local next_id = ids[index + 1]
+    local index, prev_id, next_id = Nav.neighbors(ids, id)
+    if not index then
+        ids = self:articleIds()
+        index, prev_id, next_id = Nav.neighbors(ids, id)
+    end
+    if not index then
+        ids = { id }
+        index, prev_id, next_id = 1, nil, nil
+    end
 
     article.unread = false
     self.cache:putArticle(article)
@@ -820,7 +919,7 @@ function Plugin:openArticle(id)
             UIManager:close(self.viewer)
             self.viewer = nil
         end
-        self:openArticle(neighbor_id)
+        self:openArticle(neighbor_id, ids)
     end
 
     local data_dir = self.cache.root
@@ -837,6 +936,7 @@ function Plugin:openArticle(id)
         total = #ids,
         prev_id = prev_id,
         next_id = next_id,
+        icons = self.icons,
         data_dir = data_dir,
         image_map = image_map,
         html_resource_directory = resource_dir,

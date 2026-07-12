@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Monochrome FreshRSS mark (adapted from official icon.svg for e-ink). -->
+  <circle fill="currentColor" cx="12" cy="12" r="3"/>
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M12 2a10 10 0 0 1 10 10"/>
+    <path d="M12 5.5a6.5 6.5 0 0 1 6.5 6.5"/>
+    <path d="M2 12a10 10 0 0 1 10 10"/>
+    <path d="M5.5 12a6.5 6.5 0 0 1 6.5 6.5"/>
+  </g>
+</svg>
