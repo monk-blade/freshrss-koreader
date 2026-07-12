@@ -26,6 +26,21 @@ ListFonts.GUJARATI_HINTS = {
     "noto sans gujarati",
     "gujarati",
 }
+ListFonts.DEVANAGARI_HINTS = {
+    "notosansdevanagari",
+    "noto sans devanagari",
+    "notoserifdevanagari",
+    "noto serif devanagari",
+    "devanagari",
+    "hindi",
+}
+
+-- Viewer @font-face settings (MuPDF CSS only — never remaps Font.fontmap).
+ListFonts.SETTING_VIEWER_LATIN = "freshrss_viewer_font_latin"
+ListFonts.SETTING_VIEWER_DEVANAGARI = "freshrss_viewer_font_devanagari"
+ListFonts.SETTING_VIEWER_GUJARATI = "freshrss_viewer_font_gujarati"
+-- Legacy single-font setting maps to Latin when viewer_latin unset.
+ListFonts.SETTING_VIEWER_LEGACY = "freshrss_viewer_font_face"
 
 -- Session overrides while FreshRSS home is open (Gujarati fallback only).
 local _session = {
@@ -70,6 +85,12 @@ end
 function ListFonts.containsGujarati(text)
     if type(text) ~= "string" or text == "" then return false end
     return text:find("\224[\170-\171][\128-\191]") ~= nil
+end
+
+---Devanagari block U+0900–U+097F as UTF-8: E0 A4 80 .. E0 A5 BF.
+function ListFonts.containsDevanagari(text)
+    if type(text) ~= "string" or text == "" then return false end
+    return text:find("\224[\164-\165][\128-\191]") ~= nil
 end
 
 function ListFonts.readLatinFont()
@@ -174,6 +195,150 @@ function ListFonts.resolveGujaratiFont(font_list)
     local saved = ListFonts.readGujaratiFont()
     if saved then return saved end
     return ListFonts.findInstalledFont(ListFonts.GUJARATI_HINTS, font_list)
+end
+
+local function readViewerSetting(key)
+    local face = G_reader_settings:readSetting(key)
+    if type(face) == "string" and face ~= "" then return face end
+    return nil
+end
+
+local function saveViewerSetting(key, face)
+    if face and face ~= "" then
+        G_reader_settings:saveSetting(key, face)
+    else
+        G_reader_settings:delSetting(key)
+    end
+    G_reader_settings:flush()
+end
+
+function ListFonts.readViewerLatinFont()
+    return readViewerSetting(ListFonts.SETTING_VIEWER_LATIN)
+        or readViewerSetting(ListFonts.SETTING_VIEWER_LEGACY)
+end
+
+function ListFonts.readViewerDevanagariFont()
+    return readViewerSetting(ListFonts.SETTING_VIEWER_DEVANAGARI)
+end
+
+function ListFonts.readViewerGujaratiFont()
+    return readViewerSetting(ListFonts.SETTING_VIEWER_GUJARATI)
+end
+
+function ListFonts.saveViewerLatinFont(face)
+    saveViewerSetting(ListFonts.SETTING_VIEWER_LATIN, face)
+    if face and face ~= "" then
+        saveViewerSetting(ListFonts.SETTING_VIEWER_LEGACY, face)
+    else
+        G_reader_settings:delSetting(ListFonts.SETTING_VIEWER_LEGACY)
+        G_reader_settings:flush()
+    end
+end
+
+function ListFonts.saveViewerDevanagariFont(face)
+    saveViewerSetting(ListFonts.SETTING_VIEWER_DEVANAGARI, face)
+end
+
+function ListFonts.saveViewerGujaratiFont(face)
+    saveViewerSetting(ListFonts.SETTING_VIEWER_GUJARATI, face)
+end
+
+function ListFonts.resolveViewerLatinFont(font_list)
+    local saved = ListFonts.readViewerLatinFont()
+    if saved then return saved end
+    return ListFonts.findInstalledFont(ListFonts.LATIN_HINTS, font_list)
+end
+
+function ListFonts.resolveViewerDevanagariFont(font_list)
+    local saved = ListFonts.readViewerDevanagariFont()
+    if saved then return saved end
+    return ListFonts.findInstalledFont(ListFonts.DEVANAGARI_HINTS, font_list)
+end
+
+function ListFonts.resolveViewerGujaratiFont(font_list)
+    local saved = ListFonts.readViewerGujaratiFont()
+    if saved then return saved end
+    return ListFonts.findInstalledFont(ListFonts.GUJARATI_HINTS, font_list)
+end
+
+---Escape a filesystem path for MuPDF @font-face url('…').
+local function cssFontUrl(path)
+    return tostring(path or ""):gsub("'", "")
+end
+
+---Emit @font-face rules + font-family stack for MuPDF article CSS.
+-- @param opts table|nil { latin, devanagari, gujarati } absolute paths
+-- @return string css fragment (may be empty)
+function ListFonts.buildViewerFontCss(opts)
+    opts = opts or {}
+    local latin = opts.latin
+    local devanagari = opts.devanagari
+    local gujarati = opts.gujarati
+    if not latin and not devanagari and not gujarati then return "" end
+
+    local families = {}
+    local css = ""
+    if latin and latin ~= "" then
+        css = css .. string.format(
+            "@font-face { font-family: 'FreshRSSLatin'; src: url('%s'); }\n",
+            cssFontUrl(latin)
+        )
+        table.insert(families, "'FreshRSSLatin'")
+    end
+    if devanagari and devanagari ~= "" then
+        css = css .. string.format(
+            "@font-face { font-family: 'FreshRSSDevanagari'; src: url('%s'); }\n",
+            cssFontUrl(devanagari)
+        )
+        table.insert(families, "'FreshRSSDevanagari'")
+    end
+    if gujarati and gujarati ~= "" then
+        css = css .. string.format(
+            "@font-face { font-family: 'FreshRSSGujarati'; src: url('%s'); }\n",
+            cssFontUrl(gujarati)
+        )
+        table.insert(families, "'FreshRSSGujarati'")
+    end
+    if #families > 0 then
+        css = css .. "body { font-family: " .. table.concat(families, ", ") .. "; }\n"
+    end
+    return css
+end
+
+---Resolved viewer font paths (auto-detect when unset).
+function ListFonts.resolveViewerFonts(font_list)
+    return {
+        latin = ListFonts.resolveViewerLatinFont(font_list),
+        devanagari = ListFonts.resolveViewerDevanagariFont(font_list),
+        gujarati = ListFonts.resolveViewerGujaratiFont(font_list),
+    }
+end
+
+---Settings row label for a viewer script font.
+function ListFonts.viewerFontLabel(kind, font_list)
+    local path, saved, prefix
+    if kind == "devanagari" then
+        saved = ListFonts.readViewerDevanagariFont()
+        path = saved or ListFonts.resolveViewerDevanagariFont(font_list)
+        prefix = "Viewer font (Hindi): "
+    elseif kind == "gujarati" then
+        saved = ListFonts.readViewerGujaratiFont()
+        path = saved or ListFonts.resolveViewerGujaratiFont(font_list)
+        prefix = "Viewer font (Gujarati): "
+    else
+        saved = ListFonts.readViewerLatinFont()
+        path = saved or ListFonts.resolveViewerLatinFont(font_list)
+        prefix = "Viewer font (Latin): "
+        -- Treat legacy-only path as explicit, not auto.
+        if not readViewerSetting(ListFonts.SETTING_VIEWER_LATIN)
+            and readViewerSetting(ListFonts.SETTING_VIEWER_LEGACY) then
+            return prefix .. ListFonts.displayName(path)
+        end
+    end
+    if not saved and path then
+        return prefix .. "auto · " .. ListFonts.displayName(path)
+    end
+    return prefix .. ListFonts.displayName(path)
 end
 
 local function fallbackHas(fallbacks, path)

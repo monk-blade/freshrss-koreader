@@ -322,6 +322,31 @@ function Images.extractImageUrls(html, max_images)
     return urls
 end
 
+---Count total remote images and how many are cached locally.
+function Images.countImageStats(html, data_dir)
+    local urls = Images.extractImageUrls(html)
+    local total = #urls
+    if total == 0 then return { total = 0, cached = 0 } end
+    local dir = Images.directory(data_dir)
+    local cached = 0
+    for _, url in ipairs(urls) do
+        local norm = Images.normalizeUrl(url)
+        if Images.findCachedFilename(dir, norm) then
+            cached = cached + 1
+        end
+    end
+    return { total = total, cached = cached }
+end
+
+---Placeholder span text for a missing/remote image.
+function Images.placeholderText(opts)
+    opts = opts or {}
+    if opts.show_images == false then
+        return "[image hidden]"
+    end
+    return "[image · tap to fetch]"
+end
+
 local function rawSrcAttr(tag)
     for attr, val in tag:gmatch("([%w:_%-]+)%s*=%s*\"([^\"]+)\"") do
         if attr:lower() == "src" then return val end
@@ -334,8 +359,10 @@ end
 
 ---Rewrite <img> tags: map[url] = local filename keeps image; missing → [image] placeholder.
 ---Emits relative filenames only (MuPDF loads them via html_resource_directory).
-function Images.rewriteHtml(html, url_to_filename, _opts)
+function Images.rewriteHtml(html, url_to_filename, opts)
     url_to_filename = url_to_filename or {}
+    opts = opts or {}
+    local placeholder = Images.placeholderText(opts)
     local body = tostring(html or "")
     return (body:gsub("<%s*[iI][mM][gG][^>]*>", function(tag)
         local candidates = Images.urlsFromImgTag(tag)
@@ -349,12 +376,12 @@ function Images.rewriteHtml(html, url_to_filename, _opts)
         end
         -- Remote src/data-src present but not cached → placeholder
         if #candidates > 0 then
-            return " <span>[image]</span> "
+            return string.format(' <span>%s</span> ', placeholder)
         end
 
         local src = rawSrcAttr(tag)
         if not src or src == "" or src:sub(1, 5) == "data:" then
-            return " <span>[image]</span> "
+            return string.format(' <span>%s</span> ', placeholder)
         end
         local normalized = Images.normalizeUrl(src)
         local_name = url_to_filename[normalized] or url_to_filename[src]
@@ -368,7 +395,7 @@ function Images.rewriteHtml(html, url_to_filename, _opts)
         if not normalized:match("^https?://") and not normalized:match("^//") then
             return string.format('<img src="%s"/>', normalized:gsub('"', ""))
         end
-        return " <span>[image]</span> "
+        return string.format(' <span>%s</span> ', placeholder)
     end))
 end
 function Images.directory(data_dir)
@@ -1020,7 +1047,9 @@ local function downloadManySerial(jobs, opts)
     local results = {}
     local downloaded = 0
     local max_success = opts.max_success
+    local should_cancel = opts.should_cancel
     for i, job in ipairs(jobs) do
+        if should_cancel and should_cancel() then break end
         if max_success and downloaded >= max_success then
             results[i] = { ok = false, url = job.url, filename = job.filename }
         else
@@ -1047,6 +1076,7 @@ local function downloadManyParallel(jobs, opts)
     end
     local max_parallel = math.max(1, tonumber(opts.max_parallel) or Images.MAX_PARALLEL)
     local max_success = opts.max_success
+    local should_cancel = opts.should_cancel
     local results = {}
     local downloaded = 0
     local next_index = 1
@@ -1091,6 +1121,7 @@ local function downloadManyParallel(jobs, opts)
     end
 
     while completed < total do
+        if should_cancel and should_cancel() then break end
         while #active < max_parallel and next_index <= total do
             if max_success and downloaded >= max_success then
                 for i = next_index, total do

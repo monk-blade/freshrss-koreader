@@ -1,10 +1,12 @@
--- Thin top-of-screen sync progress strip (text + ProgressWidget).
+-- Thin top-of-screen sync progress strip (text + ProgressWidget + cancel).
 local Blitbuffer = require("ffi/blitbuffer")
 local Device = require("device")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
+local IconButton = require("ui/widget/iconbutton")
 local IconWidget = require("ui/widget/iconwidget")
 local ProgressWidget = require("ui/widget/progresswidget")
 local Size = require("ui/size")
@@ -25,7 +27,7 @@ function StatusStrip:init()
     self.label = TextWidget:new{
         text = self.text or "Syncing…",
         face = Font:getFace("smallinfofont"),
-        max_width = self.width - Screen:scaleBySize(48),
+        max_width = self.width - Screen:scaleBySize(96),
     }
     self.progress = ProgressWidget:new{
         width = self.width - 2 * self.padding,
@@ -35,10 +37,26 @@ function StatusStrip:init()
         fillcolor = Blitbuffer.COLOR_BLACK,
         bgcolor = Blitbuffer.COLOR_WHITE,
     }
-    local header = HorizontalGroup:new{
+    local header_children = {
         self.icon_widget or TextWidget:new{ text = "", face = Font:getFace("smallinfofont") },
         self.label,
     }
+    if self.on_cancel then
+        local cancel_size = Screen:scaleBySize(20)
+        table.insert(header_children, HorizontalSpan:new{ width = Size.span.horizontal_small })
+        table.insert(header_children, IconButton:new{
+            icon = "notice-close",
+            width = cancel_size,
+            height = cancel_size,
+            padding = Size.padding.tiny,
+            callback = function()
+                if self.on_cancel then self.on_cancel() end
+            end,
+            allow_flash = true,
+            show_parent = self,
+        })
+    end
+    local header = HorizontalGroup:new(header_children)
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = Size.border.thin,
@@ -67,14 +85,16 @@ end
 local Status = {
     strip = nil,
     icons = nil,
+    on_cancel = nil,
 }
 
 function Status:setIcons(icons)
     self.icons = icons
 end
 
-function Status:show(text, percentage)
+function Status:show(text, percentage, on_cancel)
     self:close()
+    self.on_cancel = on_cancel
     local icon_widget
     if self.icons then
         local path = self.icons:path("refresh")
@@ -91,6 +111,7 @@ function Status:show(text, percentage)
         text = text or "Syncing FreshRSS…",
         percentage = percentage or 0,
         icon_widget = icon_widget,
+        on_cancel = on_cancel,
     }
     UIManager:show(self.strip)
     UIManager:forceRePaint()
@@ -98,7 +119,7 @@ end
 
 function Status:update(text, percentage)
     if not self.strip then
-        self:show(text, percentage)
+        self:show(text, percentage, self.on_cancel)
         return
     end
     self.strip:setProgress(text, percentage)
@@ -110,6 +131,7 @@ function Status:close()
         UIManager:close(self.strip)
         self.strip = nil
     end
+    self.on_cancel = nil
 end
 
 return Status

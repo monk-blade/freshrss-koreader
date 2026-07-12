@@ -16,6 +16,40 @@ describe("FreshRSS list_fonts helpers", function()
         ListFonts._resetSessionForTests()
     end)
 
+    it("detects Devanagari Unicode in titles", function()
+        assert.is_false(ListFonts.containsDevanagari("Hello"))
+        -- "हिन्दी" (Devanagari)
+        assert.is_true(ListFonts.containsDevanagari("हिन्दी news"))
+    end)
+
+    it("builds viewer font CSS with script stack", function()
+        local css = ListFonts.buildViewerFontCss({
+            latin = "/fonts/Latin.ttf",
+            devanagari = "/fonts/Hindi.ttf",
+            gujarati = "/fonts/Gujarati.ttf",
+        })
+        assert.truthy(css:find("FreshRSSLatin"))
+        assert.truthy(css:find("FreshRSSDevanagari"))
+        assert.truthy(css:find("FreshRSSGujarati"))
+        assert.truthy(css:find("font%-family: 'FreshRSSLatin', 'FreshRSSDevanagari', 'FreshRSSGujarati'"))
+    end)
+
+    it("resolves viewer fonts with saved settings", function()
+        local fonts = {
+            "/fonts/RobotoCondensed-Regular.ttf",
+            "/fonts/NotoSansDevanagari-Regular.ttf",
+            "/fonts/NotoSerifGujarati-Regular.ttf",
+        }
+        ListFonts.saveViewerLatinFont("/custom/Latin.ttf")
+        ListFonts.saveViewerDevanagariFont(nil)
+        ListFonts.saveViewerGujaratiFont(nil)
+        local resolved = ListFonts.resolveViewerFonts(fonts)
+        assert.equals("/custom/Latin.ttf", resolved.latin)
+        assert.equals("/fonts/NotoSansDevanagari-Regular.ttf", resolved.devanagari)
+        assert.equals("/fonts/NotoSerifGujarati-Regular.ttf", resolved.gujarati)
+        ListFonts.saveViewerLatinFont(nil)
+    end)
+
     it("detects Gujarati Unicode in titles", function()
         assert.is_false(ListFonts.containsGujarati(nil))
         assert.is_false(ListFonts.containsGujarati(""))

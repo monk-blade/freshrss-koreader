@@ -122,7 +122,7 @@ describe("FreshRSS renderer HTML sanitize", function()
         assert.falsy(out:find("<script", 1, true))
         assert.falsy(out:find("<img", 1, true))
         assert.falsy(out:find("<iframe", 1, true))
-        assert.truthy(out:find("%[image%]"))
+        assert.truthy(out:find("%[image · tap to fetch%]"))
         assert.truthy(out:find("Hi", 1, true))
     end)
 
@@ -179,6 +179,40 @@ describe("FreshRSS renderer CSS / view settings", function()
         for k in pairs(settings_store) do
             settings_store[k] = nil
         end
+    end)
+
+    it("injects multi-script @font-face stack for viewer fonts", function()
+        local css = Renderer.buildCss({
+            viewer_fonts = {
+                latin = "/fonts/RobotoCondensed-Regular.ttf",
+                devanagari = "/fonts/NotoSansDevanagari-Regular.ttf",
+                gujarati = "/fonts/NotoSerifGujarati-Regular.ttf",
+            },
+            line_height = 1.45,
+            show_images = false,
+        })
+        assert.truthy(css:find("FreshRSSLatin", 1, true))
+        assert.truthy(css:find("FreshRSSDevanagari", 1, true))
+        assert.truthy(css:find("FreshRSSGujarati", 1, true))
+        assert.truthy(css:find("/fonts/NotoSansDevanagari-Regular.ttf", 1, true))
+        assert.truthy(css:find("font%-family: 'FreshRSSLatin', 'FreshRSSDevanagari', 'FreshRSSGujarati'"))
+    end)
+
+    it("includes wide-block and table overflow CSS", function()
+        local css = Renderer.buildCss({ show_images = true, line_height = 1.45 })
+        assert.truthy(css:find("table%-layout: fixed"))
+        assert.truthy(css:find("overflow%-wrap: break%-word"))
+        assert.truthy(css:find("max%-width: 100%%"))
+    end)
+
+    it("formats image toggle labels with cache stats", function()
+        assert.equals("Show images: off", Renderer.formatShowImagesLabel(false, { total = 0 }))
+        assert.equals("Show images: off (3 hidden)", Renderer.formatShowImagesLabel(false, { total = 3 }))
+        assert.equals("Show images: on (2 cached)", Renderer.formatShowImagesLabel(true, { total = 2, cached = 2 }))
+        assert.equals("Show images: on (1/3 cached · tap to fetch)",
+            Renderer.formatShowImagesLabel(true, { total = 3, cached = 1 }))
+        assert.equals("[image hidden]", Renderer.imagePlaceholderText({ show_images = false }))
+        assert.equals("[image · tap to fetch]", Renderer.imagePlaceholderText({ show_images = true }))
     end)
 
     it("injects @font-face when a font path is set", function()

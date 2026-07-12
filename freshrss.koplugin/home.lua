@@ -9,6 +9,7 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local IconButton = require("ui/widget/iconbutton")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
+local OverlapGroup = require("ui/widget/overlapgroup")
 local Size = require("ui/size")
 local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
@@ -111,9 +112,26 @@ function Home:init()
     end
 end
 
+-- OverlapGroup paints later children on top but propagates events first→last
+-- (bottom→top). Reverse so topmost title-bar icons win hit-testing.
+local HeaderOverlap = OverlapGroup:extend{}
+function HeaderOverlap:propagateEvent(event)
+    for i = #self, 1, -1 do
+        if self[i]:handleEvent(event) then
+            return true
+        end
+    end
+    return false
+end
+
 function Home:_buildHeader(width)
     local plugin = self.plugin
     local icons = plugin.icons
+    local icon_ratio = 0.7
+    local icon_size = Screen:scaleBySize((G_defaults and G_defaults:readSetting("DGENERIC_ICON_SIZE") or 28) * icon_ratio)
+    local btn_pad = Screen:scaleBySize(11)
+    local gap = Screen:scaleBySize(4)
+
     self.title_bar = TitleBar:new{
         width = width,
         fullscreen = true,
@@ -124,13 +142,53 @@ function Home:_buildHeader(width)
         title_multilines = false,
         title_shrink_font_to_fit = true,
         left_icon = icons:name("freshrss"),
-        left_icon_size_ratio = 0.7,
+        left_icon_size_ratio = icon_ratio,
         left_icon_tap_callback = function() plugin:requestSync() end,
         left_icon_allow_flash = true,
         close_callback = function() self:onClose() end,
         show_parent = self,
     }
-    return self.title_bar
+
+    -- TitleBar close uses padding_left = 2*icon_size, which extends its tap
+    -- zone over Browse/Settings. Keep the visual X, shrink the hit target.
+    if self.title_bar.right_button then
+        local rb = self.title_bar.right_button
+        rb.padding_left = self.title_bar.button_padding
+        rb:update()
+    end
+
+    local function titleBarIcon(icon_key, callback, slot_from_close)
+        local btn = IconButton:new{
+            icon = icons:name(icon_key),
+            width = icon_size,
+            height = icon_size,
+            padding = btn_pad,
+            callback = callback,
+            allow_flash = true,
+            show_parent = self,
+        }
+        local btn_w = btn:getSize().w
+        local close_reserve = icon_size + btn_pad
+        btn.overlap_offset = {
+            width - close_reserve - (slot_from_close * (btn_w + gap)),
+            0,
+        }
+        return btn
+    end
+
+    self.header = HeaderOverlap:new{
+        width = width,
+        dimen = Geom:new{
+            x = 0,
+            y = 0,
+            w = width,
+            h = self.title_bar:getHeight(),
+        },
+        self.title_bar,
+        titleBarIcon("list_filter", function() plugin:showBrowsePicker() end, 2),
+        titleBarIcon("settings", function() plugin:showSettingsMenu() end, 1),
+    }
+    return self.header
 end
 
 function Home:_actionChip(icon_key, callback)
@@ -166,11 +224,7 @@ function Home:_buildFavoritesRow(width)
         table.insert(chips, HorizontalSpan:new{ width = Size.span.horizontal_small })
     end
 
-    -- Browse / Mark all / Settings live on the favorites row (not the TitleBar).
-    addChip(self:_actionChip("list_filter", function() plugin:showBrowsePicker() end))
-    addChip(self:_actionChip("check_circle", function() plugin:confirmMarkAllRead() end))
-    addChip(self:_actionChip("settings", function() plugin:showSettingsMenu() end))
-
+    -- All feeds + favorite category chips only (Browse/Settings are on TitleBar).
     local sep_h = Screen:scaleBySize(28)
     table.insert(chips, LineWidget:new{
         background = Blitbuffer.COLOR_DARK_GRAY,
@@ -178,7 +232,7 @@ function Home:_buildFavoritesRow(width)
     })
     table.insert(chips, HorizontalSpan:new{ width = Size.span.horizontal_small })
 
-    -- All-articles chip (layout-list) before favorite categories.
+    -- All-articles chip (layout-list) first on the favorites row.
     local all_selected = browse.mode == "all"
     addChip(FrameContainer:new{
         bordersize = all_selected and Size.border.thick or Size.border.thin,

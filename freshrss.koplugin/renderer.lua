@@ -101,8 +101,11 @@ img:first-child, body > img:first-child { margin-top: 0 !important; }
 a { text-decoration: underline; }
 blockquote { margin: 0.5em 0; padding-left: 0.8em; border-left: 2px solid #888; }
 blockquote:first-child { margin-top: 0; }
-pre, code { font-family: monospace; }
-pre { white-space: pre-wrap; }
+pre, code { font-family: monospace; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; max-width: 100%%; }
+table { width: 100%%; max-width: 100%%; table-layout: fixed; border-collapse: collapse; word-break: break-word; overflow-wrap: break-word; }
+td, th { word-break: break-word; overflow-wrap: break-word; padding: 0.2em 0.3em; vertical-align: top; }
+figure, svg, canvas, video { max-width: 100%%; height: auto; }
+div, section, article, aside { max-width: 100%%; overflow-wrap: break-word; word-break: break-word; }
 ul, ol { margin: 0.4em 0; padding-left: 1.4em; }
 %s
 ]], top, side, bottom, side, tostring(lh), align_css, tostring(lh), align_css, img_css)
@@ -118,6 +121,8 @@ function Renderer.buildCss(opts)
     if justify == nil then justify = Renderer.readJustifyText() end
     local font_face = opts.font_face
     if font_face == nil then font_face = Renderer.readFontFace() end
+    local viewer_fonts = opts.viewer_fonts
+    if viewer_fonts == nil then viewer_fonts = Renderer.readViewerFonts() end
     local pad_top = opts.pad_top
     if pad_top == nil then pad_top = Renderer.readPadTop() end
     local pad_side = opts.pad_side
@@ -126,7 +131,9 @@ function Renderer.buildCss(opts)
     if pad_bottom == nil then pad_bottom = Renderer.readPadBottom() end
 
     local css = cssBase(line_height, show_images, justify, pad_top, pad_side, pad_bottom)
-    if font_face and font_face ~= "" then
+    if viewer_fonts and (viewer_fonts.latin or viewer_fonts.devanagari or viewer_fonts.gujarati) then
+        css = css .. "\n" .. ListFonts.buildViewerFontCss(viewer_fonts)
+    elseif font_face and font_face ~= "" then
         css = css .. string.format(
             "\n@font-face { font-family: 'FreshRSSFont'; src: url('%s'); }\nbody { font-family: 'FreshRSSFont'; }\n",
             font_face:gsub("'", "")
@@ -135,7 +142,46 @@ function Renderer.buildCss(opts)
     return css
 end
 
-function Renderer.sanitizeHtml(html)
+---Resolved viewer font paths for MuPDF CSS (Latin / Devanagari / Gujarati).
+function Renderer.readViewerFonts()
+    return ListFonts.resolveViewerFonts()
+end
+
+---Human-readable image toggle label for View settings.
+function Renderer.formatShowImagesLabel(show_images, stats)
+    stats = stats or {}
+    local total = tonumber(stats.total) or 0
+    local cached = tonumber(stats.cached) or 0
+    if not show_images then
+        if total > 0 then
+            return string.format("Show images: off (%d hidden)", total)
+        end
+        return "Show images: off"
+    end
+    if total > 0 then
+        if cached >= total then
+            return string.format("Show images: on (%d cached)", cached)
+        end
+        if cached > 0 then
+            return string.format("Show images: on (%d/%d cached · tap to fetch)", cached, total)
+        end
+        return string.format("Show images: on (%d · tap to fetch)", total)
+    end
+    return "Show images: on"
+end
+
+---Placeholder text for remote/missing images in sanitized HTML.
+function Renderer.imagePlaceholderText(opts)
+    opts = opts or {}
+    if opts.show_images == false then
+        return "[image hidden]"
+    end
+    return "[image · tap to fetch]"
+end
+
+function Renderer.sanitizeHtml(html, opts)
+    opts = opts or {}
+    local placeholder = Renderer.imagePlaceholderText(opts)
     local body = tostring(html or "")
     if body == "" then return "" end
 
@@ -197,7 +243,7 @@ function Renderer.sanitizeHtml(html)
         ) then
             return string.format('<img src="%s"/>', src:gsub('"', ""))
         end
-        return " <span>[image]</span> "
+        return string.format(' <span>%s</span> ', placeholder)
     end)
     body = body:gsub("%s[oO][nN]%w+%s*=%s*\"[^\"]*\"", "")
     body = body:gsub("%s[oO][nN]%w+%s*=%s*'[^']*'", "")
@@ -247,17 +293,17 @@ function Renderer.buildHtmlBody(article, opts)
                 resource_dir = resource_dir or cached_dir
             end
             -- Relative filenames only; ScrollHtmlWidget gets html_resource_directory.
-            prepared = Images.rewriteHtml(raw, map or {})
+            prepared = Images.rewriteHtml(raw, map or {}, { show_images = true })
         end
     elseif raw ~= "" then
         -- Placeholders for all images when disabled
-        prepared = Images.rewriteHtml(raw, {})
+        prepared = Images.rewriteHtml(raw, {}, { show_images = false })
     end
 
-    local sanitized = Renderer.sanitizeHtml(prepared)
+    local sanitized = Renderer.sanitizeHtml(prepared, { show_images = opts.show_images })
     sanitized = Renderer.stripDuplicateLeadingTitle(sanitized, article and article.title)
     if sanitized ~= prepared then
-        sanitized = Renderer.sanitizeHtml(sanitized)
+        sanitized = Renderer.sanitizeHtml(sanitized, { show_images = opts.show_images })
     end
     if sanitized == "" then
         local plain = util.htmlToPlainTextIfHtml(raw)
@@ -302,18 +348,11 @@ function Renderer.saveTitleFontSize(size)
 end
 
 function Renderer.readFontFace()
-    local face = G_reader_settings:readSetting("freshrss_viewer_font_face")
-    if type(face) == "string" and face ~= "" then return face end
-    return nil
+    return ListFonts.readViewerLatinFont()
 end
 
 function Renderer.saveFontFace(face)
-    if face and face ~= "" then
-        G_reader_settings:saveSetting("freshrss_viewer_font_face", face)
-    else
-        G_reader_settings:delSetting("freshrss_viewer_font_face")
-    end
-    G_reader_settings:flush()
+    ListFonts.saveViewerLatinFont(face)
 end
 
 function Renderer.readLineHeight()
@@ -808,6 +847,7 @@ function ArticleViewer:_buildHtmlWidget()
         line_height = self.line_height,
         justify = self.justify_text,
         font_face = self.font_face,
+        viewer_fonts = Renderer.readViewerFonts(),
         pad_top = self.pad_top,
         pad_side = self.pad_side,
         pad_bottom = self.pad_bottom,
@@ -949,6 +989,17 @@ function ArticleViewer:onShowFontPicker()
     UIManager:show(self.font_menu, "ui")
 end
 
+function ArticleViewer:_imageStats()
+    local article = self.article or {}
+    local html = tostring(article.html or "")
+    if html == "" then return { total = 0, cached = 0 } end
+    if Images.countImageStats then
+        return Images.countImageStats(html, self.data_dir)
+    end
+    local total = #(Images.extractImageUrls(html) or {})
+    return { total = total, cached = 0 }
+end
+
 function ArticleViewer:onShowViewSettings()
     local icons = self.icons
     local function iname(key)
@@ -1047,7 +1098,7 @@ function ArticleViewer:onShowViewSettings()
         },
         {
             icon = iname("image"),
-            text = self.show_images and "Show images: on" or "Show images: off",
+            text = Renderer.formatShowImagesLabel(self.show_images, self:_imageStats()),
             callback = function()
                 UIManager:close(panel)
                 self.show_images = not self.show_images

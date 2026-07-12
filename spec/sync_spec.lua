@@ -128,14 +128,16 @@ describe("FreshRSS state synchronization", function()
         local sync = Sync:new(cache, settings)
         local api = {
             login = function() return true end,
-            listSubscriptions = function() return {} end,
+            listSubscriptions = function() return { subscriptions = { { id = "feed/1" } } } end,
             listTags = function() return {} end,
             unreadCount = function() return {} end,
-            streamItemIds = function() return { ids = {} } end,
-            streamItemContents = function() return { items = {} } end,
+            streamItemIds = function() return { ids = { "id-1", "id-2" } } end,
+            streamItemContents = function() return { items = { { id = "id-1", title = "A", categories = {} } } } end,
         }
-        local ok = sync:refresh(api, nil, function(stage, ratio)
+        local details = {}
+        local ok = sync:refresh(api, nil, function(stage, ratio, detail)
             table.insert(stages, stage)
+            if detail then details[stage] = detail end
         end)
         assert.is_true(ok)
         assert.equals("login", stages[1])
@@ -147,6 +149,26 @@ describe("FreshRSS state synchronization", function()
         assert.is_true(seen.cache)
         assert.is_true(seen.done)
         assert.equals("done", stages[#stages])
+        assert.equals(2, details.stream.found)
+        assert.equals(2, details.cache.total)
+        assert.equals(2, details.cache.done)
+        assert.equals(1, details.meta.subscriptions)
+    end)
+
+    it("formats compact progress labels with counts", function()
+        assert.equals("Signing in…", Sync.formatProgressLabel("login"))
+        assert.equals("Queue · 3/10", Sync.formatProgressLabel("queue", { pending = 10, flushed = 3 }))
+        assert.equals("Feeds · 42", Sync.formatProgressLabel("meta", { subscriptions = 42 }))
+        assert.equals("IDs · 150 found", Sync.formatProgressLabel("stream", { found = 150 }))
+        assert.equals("Articles · 40/120", Sync.formatProgressLabel("cache", { done = 40, total = 120 }))
+        assert.equals("Articles · 12 new / 150 ids", Sync.formatProgressLabel("cache", { done = 12, total = 12, found = 150 }))
+        assert.equals("Articles · 12 new / 138 skipped / 150 ids",
+            Sync.formatProgressLabel("cache", { done = 12, total = 12, found = 150, skipped = 138 }))
+        assert.equals("Articles · 0 new / 5 skipped / 5 ids",
+            Sync.formatProgressLabel("cache", { done = 0, total = 0, found = 5, skipped = 5 }))
+        assert.equals("Images · 5/20", Sync.formatProgressLabel("images", { done = 5, total = 20 }))
+        assert.equals("Done · 2 queue failed", Sync.formatProgressLabel("done", { failed = 2 }))
+        assert.equals("Done", Sync.formatProgressLabel("done", { failed = 0 }))
     end)
 
     it("flushes the pending queue before fetching the stream", function()
@@ -265,6 +287,61 @@ describe("FreshRSS state synchronization", function()
         assert.equals(20, id_calls[2].n)
         assert.equals(1, #content_calls)
         assert.equals(20, #content_calls[1])
+    end)
+
+    it("skips contents fetch when every enumerated id is already cached", function()
+        local content_calls = 0
+        local articles = {}
+        for i = 1, 5 do
+            articles[tostring(i)] = { id = tostring(i), html = "<p>cached</p>" }
+        end
+        local cache = {
+            hasArticle = function(_, id) return articles[tostring(id)] ~= nil end,
+            getArticle = function(_, id) return articles[tostring(id)] end,
+            putArticle = function() end,
+            queuedActions = function() return {} end,
+        }
+        local settings = { saveSetting = function() end, flush = function() end, readSetting = function() end }
+        local sync = Sync:new(cache, settings)
+        local api = {
+            login = function() return true end,
+            listSubscriptions = function() return {} end,
+            listTags = function() return {} end,
+            unreadCount = function() return {} end,
+            streamItemIds = function()
+                return { ids = { "1", "2", "3", "4", "5" } }
+            end,
+            streamItemContents = function()
+                content_calls = content_calls + 1
+                return { items = {} }
+            end,
+        }
+        local cache_details = {}
+        local ok, result = sync:refresh(api, nil, function(stage, _, detail)
+            if stage == "cache" and detail then
+                table.insert(cache_details, detail)
+            end
+        end)
+        assert.is_true(ok)
+        assert.equals(0, content_calls)
+        assert.equals(0, result.fetched)
+        assert.is_true(#cache_details >= 1)
+        local final = cache_details[#cache_details]
+        assert.equals(0, final.done)
+        assert.equals(0, final.total)
+        assert.equals(5, final.found)
+        assert.equals(5, final.skipped)
+        assert.equals("Articles · 0 new / 5 skipped / 5 ids", Sync.formatProgressLabel("cache", final))
+    end)
+
+    it("partitions ids into cached and missing via hasArticle", function()
+        local present = { a = true, c = true }
+        local cache = {
+            hasArticle = function(_, id) return present[id] and true or false end,
+        }
+        assert.is_true(Sync._articleCached(cache, "a"))
+        assert.is_false(Sync._articleCached(cache, "b"))
+        assert.is_true(Sync._articleCached(cache, "c"))
     end)
 
     it("batches queue flush by action and state", function()
@@ -405,5 +482,105 @@ describe("FreshRSS state synchronization", function()
         assert.equals("https://cdn/a.png", many_calls[1].jobs[1].url)
         assert.equals("https://cdn/b.png", many_calls[1].jobs[2].url)
         assert.equals(3, many_calls[1].opts.max_parallel)
+    end)
+
+    it("clamps and persists the per-view sync article cap", function()
+        local stored = {}
+        local settings = {
+            readSetting = function(_, key) return stored[key] end,
+            saveSetting = function(_, key, value) stored[key] = value end,
+            flush = function() end,
+        }
+        assert.equals(100, Sync.readArticleCap(settings))
+        assert.equals(20, Sync.clampArticleCap(5))
+        assert.equals(500, Sync.clampArticleCap(900))
+        assert.equals(75, Sync.saveArticleCap(settings, 75))
+        assert.equals(75, stored.freshrss_articles_per_sync)
+        local sync = Sync:new({}, settings)
+        assert.equals(75, sync:syncOptions().max_articles)
+    end)
+
+    it("stops sync safely when cancel is requested", function()
+        local stored = {}
+        local id_calls = 0
+        local content_calls = 0
+        local cache = {
+            hasArticle = function() return false end,
+            getArticle = function() return nil end,
+            putArticle = function(_, article) stored[article.id] = article end,
+            queuedActions = function() return {} end,
+            setMeta = function() end,
+        }
+        local settings = {
+            saveSetting = function() end,
+            flush = function() end,
+            readSetting = function() end,
+        }
+        local sync = Sync:new(cache, settings)
+        local api = {
+            login = function() return true end,
+            listSubscriptions = function() return {} end,
+            listTags = function() return {} end,
+            unreadCount = function() return {} end,
+            streamItemIds = function()
+                id_calls = id_calls + 1
+                if id_calls == 1 then
+                    sync:requestCancel()
+                    return { ids = { "1", "2" }, continuation = "more" }
+                end
+                return { ids = {} }
+            end,
+            streamItemContents = function()
+                content_calls = content_calls + 1
+                return { items = {} }
+            end,
+        }
+        local ok, result = sync:refresh(api)
+        assert.is_false(ok)
+        assert.is_true(result.cancelled)
+        assert.equals(0, result.fetched)
+        assert.equals(0, content_calls)
+        assert.equals(1, id_calls)
+    end)
+
+    it("stores partial articles when cancelled during content fetch", function()
+        local stored = {}
+        local cache = {
+            hasArticle = function() return false end,
+            getArticle = function() return nil end,
+            putArticle = function(_, article) stored[article.id] = article end,
+            queuedActions = function() return {} end,
+            setMeta = function() end,
+        }
+        local settings = {
+            saveSetting = function() end,
+            flush = function() end,
+            readSetting = function() end,
+        }
+        local sync = Sync:new(cache, settings)
+        local batch = 0
+        local api = {
+            login = function() return true end,
+            listSubscriptions = function() return {} end,
+            listTags = function() return {} end,
+            unreadCount = function() return {} end,
+            streamItemIds = function()
+                return { ids = { "1", "2", "3" } }
+            end,
+            streamItemContents = function(_, ids)
+                batch = batch + 1
+                if batch == 1 then
+                    sync:requestCancel()
+                    return { items = { { id = "1", title = "One", categories = {} } } }
+                end
+                return { items = {} }
+            end,
+        }
+        local ok, result = sync:refresh(api)
+        assert.is_false(ok)
+        assert.is_true(result.cancelled)
+        assert.equals(1, result.fetched)
+        assert.is_not_nil(stored["1"])
+        assert.is_nil(stored["2"])
     end)
 end)

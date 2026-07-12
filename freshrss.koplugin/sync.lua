@@ -6,6 +6,28 @@ local STARRED_STATE = "user/-/state/com.google/starred"
 local DEFAULT_ARTICLE_CAP = 100
 local MIN_ARTICLE_CAP = 20
 local MAX_ARTICLE_CAP = 500
+
+function Sync.clampArticleCap(raw)
+    local max = tonumber(raw) or DEFAULT_ARTICLE_CAP
+    if max < MIN_ARTICLE_CAP then max = MIN_ARTICLE_CAP end
+    if max > MAX_ARTICLE_CAP then max = MAX_ARTICLE_CAP end
+    return max
+end
+
+function Sync.readArticleCap(settings)
+    if not settings or not settings.readSetting then
+        return DEFAULT_ARTICLE_CAP
+    end
+    return Sync.clampArticleCap(settings:readSetting("freshrss_articles_per_sync"))
+end
+
+function Sync.saveArticleCap(settings, value)
+    if not settings or not settings.saveSetting then return Sync.clampArticleCap(value) end
+    local max = Sync.clampArticleCap(value)
+    settings:saveSetting("freshrss_articles_per_sync", max)
+    if settings.flush then settings:flush() end
+    return max
+end
 local PAGE_SIZE = 100
 local MAX_SYNC_IMAGES = 50
 local EDIT_TAG_BATCH = 40
@@ -66,12 +88,85 @@ local function articleFromRaw(raw, old)
     }
 end
 
-local function report(on_progress, stage, ratio)
-    if on_progress then on_progress(stage, ratio) end
+local function report(on_progress, stage, ratio, detail)
+    if on_progress then on_progress(stage, ratio, detail) end
+end
+
+---Compact one-line label for the sync status strip (e-ink friendly).
+function Sync.formatProgressLabel(stage, detail)
+    detail = detail or {}
+    if stage == "login" then
+        return "Signing in…"
+    elseif stage == "queue" then
+        local pending = detail.pending
+        if pending and pending > 0 then
+            local flushed = detail.flushed or 0
+            return string.format("Queue · %d/%d", flushed, pending)
+        end
+        return "Flushing queue…"
+    elseif stage == "meta" then
+        local subs = detail.subscriptions
+        if subs and subs > 0 then
+            return string.format("Feeds · %d", subs)
+        end
+        return "Loading feeds…"
+    elseif stage == "stream" then
+        if detail.found and detail.found > 0 then
+            return string.format("IDs · %d found", detail.found)
+        end
+        return "Fetching article IDs…"
+    elseif stage == "cache" then
+        local total = detail.total
+        local found = detail.found
+        local skipped = detail.skipped
+        local done = detail.done or 0
+        if total and total > 0 and done < total then
+            return string.format("Articles · %d/%d", done, total)
+        end
+        if found and found > 0 then
+            if skipped and skipped > 0 then
+                return string.format("Articles · %d new / %d skipped / %d ids",
+                    total or 0, skipped, found)
+            end
+            if total and total >= 0 then
+                return string.format("Articles · %d new / %d ids", total, found)
+            end
+            return string.format("Articles · 0 new / %d ids", found)
+        end
+        if total and total > 0 then
+            return string.format("Articles · %d/%d", done, total)
+        end
+        return "Downloading articles…"
+    elseif stage == "images" then
+        local total = detail.total
+        if total and total > 0 then
+            return string.format("Images · %d/%d", detail.done or 0, total)
+        end
+        return "Prefetching images…"
+    elseif stage == "done" then
+        local failed = detail.failed or 0
+        if failed > 0 then
+            return string.format("Done · %d queue failed", failed)
+        end
+        return "Done"
+    end
+    return "Syncing…"
 end
 
 function Sync:new(cache, settings)
-    return setmetatable({ cache = cache, settings = settings }, self)
+    return setmetatable({ cache = cache, settings = settings, _cancel_requested = false }, self)
+end
+
+function Sync:resetCancel()
+    self._cancel_requested = false
+end
+
+function Sync:requestCancel()
+    self._cancel_requested = true
+end
+
+function Sync:cancelled()
+    return self._cancel_requested == true
 end
 
 Sync.SCOPE_CURRENT = "current_view"
@@ -98,13 +193,7 @@ end
 
 function Sync:syncOptions(browse)
     browse = browse or {}
-    local raw_max = self.settings:readSetting("freshrss_articles_per_sync")
-    local max = DEFAULT_ARTICLE_CAP
-    if raw_max ~= nil then
-        max = tonumber(raw_max) or DEFAULT_ARTICLE_CAP
-    end
-    if max < MIN_ARTICLE_CAP then max = MIN_ARTICLE_CAP end
-    if max > MAX_ARTICLE_CAP then max = MAX_ARTICLE_CAP end
+    local max = Sync.readArticleCap(self.settings)
     local unread_only = self.settings:readSetting("freshrss_sync_unread_only")
     if unread_only == nil then unread_only = true end
     local mode = browse.mode or "unread"
@@ -190,6 +279,13 @@ function Sync.streamLabel(browse, stream_id, cache)
     return "Reading list"
 end
 
+local function articleCached(cache, id)
+    if cache.hasArticle then
+        return cache:hasArticle(id)
+    end
+    return cache:getArticle(id) ~= nil
+end
+
 -- Enumerate stream item ids, then fetch contents only for cache misses.
 -- browse: optional { mode, feed_id, label }; stream_id overrides when provided.
 function Sync:fetchAllStreamItems(api, stream_id, on_progress, browse)
@@ -199,10 +295,15 @@ function Sync:fetchAllStreamItems(api, stream_id, on_progress, browse)
     local continuation
     local pages = 0
     while #all_ids < opts.max_articles do
+        if self:cancelled() then
+            opts.stream_id = sid
+            opts.ids_seen = #all_ids
+            opts.ids_missing = 0
+            opts.ids_skipped = 0
+            return {}, "cancelled", opts
+        end
         pages = pages + 1
         local n = math.min(opts.page_size, opts.max_articles - #all_ids)
-        local ratio = 0.55 + 0.20 * (#all_ids / opts.max_articles)
-        report(on_progress, "stream", ratio)
         local page, err = api:streamItemIds(sid, {
             n = n,
             exclude_read = opts.exclude_read,
@@ -219,6 +320,8 @@ function Sync:fetchAllStreamItems(api, stream_id, on_progress, browse)
             if #all_ids >= opts.max_articles then break end
             table.insert(all_ids, id)
         end
+        local ratio = 0.55 + 0.20 * (#all_ids / opts.max_articles)
+        report(on_progress, "stream", ratio, { found = #all_ids, max = opts.max_articles })
         if #all_ids >= opts.max_articles then break end
         continuation = page.continuation
         if not continuation or tostring(continuation) == "" then break end
@@ -227,21 +330,38 @@ function Sync:fetchAllStreamItems(api, stream_id, on_progress, browse)
 
     local missing = {}
     for _, id in ipairs(all_ids) do
-        if not self.cache:getArticle(id) then
+        if not articleCached(self.cache, id) then
             table.insert(missing, id)
         end
     end
+    local skipped = #all_ids - #missing
 
     local items = {}
+    if #missing == 0 then
+        report(on_progress, "cache", 0.90, { done = 0, total = 0, found = #all_ids, skipped = skipped })
+    end
     local batch = CONTENTS_BATCH
     if api.CONTENTS_BATCH then batch = api.CONTENTS_BATCH end
     for i = 1, #missing, batch do
+        if self:cancelled() then
+            opts.stream_id = sid
+            opts.ids_seen = #all_ids
+            opts.ids_missing = #missing
+            opts.ids_skipped = skipped
+            return items, "cancelled", opts
+        end
         local chunk = {}
         for j = i, math.min(i + batch - 1, #missing) do
             table.insert(chunk, missing[j])
         end
-        local ratio = 0.75 + 0.15 * (i / math.max(#missing, 1))
-        report(on_progress, "cache", ratio)
+        local done_count = math.min(i + batch - 1, #missing)
+        local ratio = 0.75 + 0.15 * (done_count / math.max(#missing, 1))
+        report(on_progress, "cache", ratio, {
+            done = done_count,
+            total = #missing,
+            found = #all_ids,
+            skipped = skipped,
+        })
         local contents, err = api:streamItemContents(chunk)
         if not contents or type(contents.items) ~= "table" then
             if #items == 0 and #missing > 0 then
@@ -252,11 +372,19 @@ function Sync:fetchAllStreamItems(api, stream_id, on_progress, browse)
         for _, raw in ipairs(contents.items) do
             table.insert(items, raw)
         end
+        if self:cancelled() then
+            opts.stream_id = sid
+            opts.ids_seen = #all_ids
+            opts.ids_missing = #missing
+            opts.ids_skipped = skipped
+            return items, "cancelled", opts
+        end
     end
 
     opts.stream_id = sid
     opts.ids_seen = #all_ids
     opts.ids_missing = #missing
+    opts.ids_skipped = skipped
     return items, nil, opts
 end
 
@@ -308,32 +436,67 @@ function Sync:prefetchImages(items, on_progress)
     end
 
     if #jobs == 0 then
-        report(on_progress, "images", 0.98)
+        report(on_progress, "images", 0.98, { done = 0, total = 0 })
         return { downloaded = 0 }
     end
 
     local _, total_downloaded = Images.downloadMany(jobs, {
         max_parallel = max_parallel,
         max_success = sync_budget,
+        should_cancel = function() return self:cancelled() end,
         on_progress = function(done, total)
             if total > 0 then
-                report(on_progress, "images", 0.92 + 0.06 * (done / total))
+                report(on_progress, "images", 0.92 + 0.06 * (done / total), { done = done, total = total })
             end
         end,
     })
-    report(on_progress, "images", 0.98)
+    report(on_progress, "images", 0.98, { done = total_downloaded or 0, total = #jobs })
     return { downloaded = total_downloaded or 0 }
+end
+
+local function cancelledResult(self, browse, opts, extra)
+    extra = extra or {}
+    opts = opts or {}
+    local sid = opts.stream_id or self:resolveStreamId(browse)
+    return false, {
+        cancelled = true,
+        fetched = extra.fetched or 0,
+        stream_id = sid,
+        stream_label = Sync.streamLabel(browse, sid, self.cache),
+        ids_seen = opts.ids_seen or extra.ids_seen or 0,
+        ids_skipped = opts.ids_skipped or extra.ids_skipped or 0,
+        flushed = extra.flushed or 0,
+        flush_failed = extra.flush_failed or 0,
+        exclude_read = opts.exclude_read,
+        max_articles = opts.max_articles,
+    }
 end
 
 function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
     -- Flush queued mark/star actions before fetching so server state is current.
-    report(on_progress, "queue", 0.35)
-    local flush_stats = self:flushQueue(api)
+    local flush_stats = self:flushQueue(api, on_progress)
+    if self:cancelled() then
+        return cancelledResult(self, browse, self:syncOptions(browse), {
+            flushed = flush_stats.flushed,
+            flush_failed = flush_stats.failed,
+        })
+    end
 
     report(on_progress, "meta", 0.40)
     local subscriptions = api:listSubscriptions()
     local tags = api:listTags()
     local counts = api:unreadCount()
+    local sub_count = 0
+    if type(subscriptions) == "table" and type(subscriptions.subscriptions) == "table" then
+        sub_count = #subscriptions.subscriptions
+    end
+    report(on_progress, "meta", 0.45, { subscriptions = sub_count })
+    if self:cancelled() then
+        return cancelledResult(self, browse, self:syncOptions(browse), {
+            flushed = flush_stats.flushed,
+            flush_failed = flush_stats.failed,
+        })
+    end
     if self.cache.setMeta then
         self.cache:setMeta({
             subscriptions = subscriptions,
@@ -343,11 +506,31 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
         })
     end
 
-    report(on_progress, "stream", 0.55)
     local items, err, opts = self:fetchAllStreamItems(api, stream_id, on_progress, browse)
+    if err == "cancelled" then
+        local stored = self:storeStreamItems(items or {})
+        return cancelledResult(self, browse, opts, {
+            fetched = stored,
+            flushed = flush_stats.flushed,
+            flush_failed = flush_stats.failed,
+        })
+    end
     if not items then return false, err end
+    if self:cancelled() then
+        local stored = self:storeStreamItems(items)
+        return cancelledResult(self, browse, opts, {
+            fetched = stored,
+            flushed = flush_stats.flushed,
+            flush_failed = flush_stats.failed,
+        })
+    end
 
-    report(on_progress, "cache", 0.90)
+    report(on_progress, "cache", 0.90, {
+        done = opts.ids_missing or 0,
+        total = opts.ids_missing or 0,
+        found = opts.ids_seen or 0,
+        skipped = opts.ids_skipped or 0,
+    })
     local stored = self:storeStreamItems(items)
 
     local evicted = 0
@@ -366,12 +549,31 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
         purged = self.images.purgeOrphans(self.cache.root, keep)
     end
 
-    report(on_progress, "images", 0.92)
+    report(on_progress, "images", 0.92, { done = 0, total = 0 })
+    if self:cancelled() then
+        return cancelledResult(self, browse, opts, {
+            fetched = stored,
+            flushed = flush_stats.flushed,
+            flush_failed = flush_stats.failed,
+            evicted = evicted,
+            images_purged = purged,
+        })
+    end
     local img_stats = self:prefetchImages(items, on_progress)
+    if self:cancelled() then
+        return cancelledResult(self, browse, opts, {
+            fetched = stored,
+            flushed = flush_stats.flushed,
+            flush_failed = flush_stats.failed,
+            evicted = evicted,
+            images_purged = purged,
+            images_downloaded = img_stats and img_stats.downloaded or 0,
+        })
+    end
     self.settings:saveSetting("freshrss_last_sync", os.time())
     self.settings:saveSetting("last_sync", os.time())
     self.settings:flush()
-    report(on_progress, "done", 1.0)
+    report(on_progress, "done", 1.0, { failed = flush_stats.failed or 0 })
     return true, {
         subscriptions = subscriptions,
         tags = tags,
@@ -381,6 +583,8 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
         max_articles = opts.max_articles,
         stream_id = opts.stream_id,
         stream_label = Sync.streamLabel(browse, opts.stream_id, self.cache),
+        ids_seen = opts.ids_seen,
+        ids_skipped = opts.ids_skipped,
         flushed = flush_stats.flushed,
         flush_failed = flush_stats.failed,
         images_downloaded = img_stats and img_stats.downloaded or 0,
@@ -390,6 +594,7 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
 end
 
 function Sync:refresh(api, stream_id, on_progress, browse)
+    self:resetCancel()
     report(on_progress, "login", 0.10)
     local ok, err = api:login()
     if not ok then return false, err end
@@ -397,6 +602,7 @@ function Sync:refresh(api, stream_id, on_progress, browse)
 end
 
 function Sync:refreshAsync(api, stream_id, callback, on_progress, browse)
+    self:resetCancel()
     report(on_progress, "login", 0.10)
     api:loginAsync(function(logged_in, login_error)
         if not logged_in then callback(false, login_error); return end
@@ -441,14 +647,17 @@ function Sync:applyAction(api, id, action, state)
     return true
 end
 
-function Sync:flushQueue(api)
+function Sync:flushQueue(api, on_progress)
     local pending = {}
     while #self.cache:queuedActions() > 0 do
         table.insert(pending, self.cache:dequeue())
     end
     if #pending == 0 then
+        report(on_progress, "queue", 0.38, { pending = 0, flushed = 0, failed = 0 })
         return { flushed = 0, failed = 0 }
     end
+    local total_pending = #pending
+    report(on_progress, "queue", 0.35, { pending = total_pending, flushed = 0, failed = 0 })
 
     -- Preserve order of first appearance of each (action, state) group.
     local groups = {}
@@ -484,6 +693,21 @@ function Sync:flushQueue(api)
 
     for _, group in ipairs(groups) do
         for i = 1, #group.ids, batch do
+            if self:cancelled() then
+                requeueFrom(group.items, i)
+                local seen = false
+                for _, later in ipairs(groups) do
+                    if later == group then
+                        seen = true
+                    elseif seen then
+                        for _, action in ipairs(later.items) do
+                            self:queueAction(action.id, action.action, action.state)
+                            failed = failed + 1
+                        end
+                    end
+                end
+                return { flushed = flushed, failed = failed, cancelled = true }
+            end
             local chunk_ids = {}
             local chunk_items = {}
             for j = i, math.min(i + batch - 1, #group.ids) do
@@ -527,6 +751,12 @@ function Sync:flushQueue(api)
                 end
             end
             flushed = flushed + #chunk_ids
+            local queue_ratio = 0.35 + 0.05 * (flushed / total_pending)
+            report(on_progress, "queue", queue_ratio, {
+                pending = total_pending,
+                flushed = flushed,
+                failed = failed,
+            })
         end
     end
     return { flushed = flushed, failed = failed }
@@ -536,7 +766,10 @@ end
 Sync._articleFromRaw = articleFromRaw
 Sync._hasCategory = hasCategory
 Sync._labelsFromCategories = labelsFromCategories
+Sync._articleCached = articleCached
 Sync.DEFAULT_ARTICLE_CAP = DEFAULT_ARTICLE_CAP
+Sync.MIN_ARTICLE_CAP = MIN_ARTICLE_CAP
+Sync.MAX_ARTICLE_CAP = MAX_ARTICLE_CAP
 Sync.ARTICLE_CAPS = { 50, 100, 200, 300 }
 Sync.MAX_SYNC_IMAGES = MAX_SYNC_IMAGES
 

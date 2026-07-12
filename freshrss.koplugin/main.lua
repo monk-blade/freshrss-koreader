@@ -32,16 +32,6 @@ local Plugin = WidgetContainer:extend{
     is_doc_only = false,
 }
 
-local STAGE_LABELS = {
-    login = "Signing in…",
-    queue = "Flushing queue…",
-    meta = "Loading feeds…",
-    stream = "Fetching articles…",
-    cache = "Updating cache…",
-    images = "Prefetching images…",
-    done = "Done",
-}
-
 local MODE_LABELS = {
     unread = "Unread",
     all = "All",
@@ -178,29 +168,24 @@ function Plugin:cleanCacheNow()
 end
 
 function Plugin:articlesPerSync()
-    local max = tonumber(self.settings:readSetting("freshrss_articles_per_sync")) or Sync.DEFAULT_ARTICLE_CAP
-    return max
+    return Sync.readArticleCap(self.settings)
 end
 
-function Plugin:cycleArticlesPerSync()
-    local current = self:articlesPerSync()
-    local caps = Sync.ARTICLE_CAPS
-    local next_cap = caps[1]
-    for i, cap in ipairs(caps) do
-        if cap == current and caps[i + 1] then
-            next_cap = caps[i + 1]
-            break
-        elseif cap == current then
-            next_cap = caps[1]
-            break
-        elseif current < cap then
-            next_cap = cap
-            break
-        end
-    end
-    self.settings:saveSetting("freshrss_articles_per_sync", next_cap)
-    self.settings:flush()
-    return next_cap
+function Plugin:showSyncLimitSpin()
+    UIManager:show(SpinWidget:new{
+        title_text = "Sync limit",
+        info_text = "Max articles to sync for the active view",
+        value = self:articlesPerSync(),
+        value_min = Sync.MIN_ARTICLE_CAP,
+        value_max = Sync.MAX_ARTICLE_CAP,
+        default_value = Sync.DEFAULT_ARTICLE_CAP,
+        ok_always_enabled = true,
+        keep_shown_on_apply = true,
+        callback = function(spin)
+            Sync.saveArticleCap(self.settings, spin.value)
+            self:showSyncSettings()
+        end,
+    })
 end
 
 function Plugin:browseState()
@@ -327,9 +312,16 @@ function Plugin:api()
 end
 
 function Plugin:progressHandler()
-    return function(stage, ratio)
-        local label = STAGE_LABELS[stage] or "Syncing FreshRSS…"
+    return function(stage, ratio, detail)
+        local label = Sync.formatProgressLabel(stage, detail)
         Status:update(label, ratio)
+    end
+end
+
+function Plugin:cancelSync()
+    if self.syncing and self.sync then
+        self.sync:requestCancel()
+        Status:update("Cancelling…", nil)
     end
 end
 
@@ -339,11 +331,24 @@ function Plugin:startSync(interactive)
     local browse = self:browseState()
     local stream_id = self.sync:resolveStreamId(browse)
     local stream_label = Sync.streamLabel(browse, stream_id, self.cache)
-    Status:show("Sync · " .. stream_label, 0.05)
+    Status:show("Sync · " .. stream_label, 0.05, function()
+        self:cancelSync()
+    end)
 
     local function done(ok, result)
         self.syncing = false
         Status:close()
+        if result and result.cancelled then
+            local fetched = result.fetched or 0
+            Notification:notify(
+                string.format("Sync cancelled · %d fetched", fetched),
+                Notification.SOURCE_ALWAYS_SHOW
+            )
+            if self.home then
+                self:showCached()
+            end
+            return
+        end
         if not ok then
             if interactive then
                 UIManager:show(InfoMessage:new{ text = "FreshRSS unavailable:\n" .. tostring(result) })
@@ -352,13 +357,25 @@ function Plugin:startSync(interactive)
             end
             return
         end
-        local unread = self.cache:unreadCount()
+        local browse = self:browseState()
+        local unread = self.cache:unreadCountForBrowse(browse)
         local fetched = result and result.fetched or 0
+        local ids_seen = result and result.ids_seen or 0
+        local ids_skipped = result and result.ids_skipped or 0
         local mode = (result and result.exclude_read) and "unread" or "all"
         local flushed = result and result.flushed or 0
         local failed = result and result.flush_failed or 0
         local label = result and result.stream_label or stream_label
-        local msg = string.format("%s · %d fetched (%s) · %d unread", label, fetched, mode, unread)
+        local msg
+        if ids_seen > 0 and ids_skipped > 0 then
+            msg = string.format("%s · %d fetched · %d skipped / %d ids · %d unread",
+                label, fetched, ids_skipped, ids_seen, unread)
+        elseif ids_seen > 0 then
+            msg = string.format("%s · %d fetched / %d ids · %d unread",
+                label, fetched, ids_seen, unread)
+        else
+            msg = string.format("%s · %d fetched (%s) · %d unread", label, fetched, mode, unread)
+        end
         if flushed > 0 or failed > 0 then
             msg = msg .. string.format(" · queue %d ok / %d failed", flushed, failed)
         end
@@ -644,6 +661,88 @@ function Plugin:listFontLabel(kind)
     return "List font (Latin): " .. ListFonts.displayName(path)
 end
 
+function Plugin:showViewerFontPicker(kind)
+    local FontList = require("fontlist")
+    local fonts = FontList:getFontList() or {}
+    local titles = {
+        latin = "Viewer font (Latin)",
+        devanagari = "Viewer font (Hindi)",
+        gujarati = "Viewer font (Gujarati)",
+    }
+    local title = titles[kind] or titles.latin
+    local readers = {
+        latin = ListFonts.readViewerLatinFont,
+        devanagari = ListFonts.readViewerDevanagariFont,
+        gujarati = ListFonts.readViewerGujaratiFont,
+    }
+    local savers = {
+        latin = ListFonts.saveViewerLatinFont,
+        devanagari = ListFonts.saveViewerDevanagariFont,
+        gujarati = ListFonts.saveViewerGujaratiFont,
+    }
+    local read_fn = readers[kind] or readers.latin
+    local save_fn = savers[kind] or savers.latin
+    local current = read_fn()
+    local entries = {
+        {
+            text = "Default / auto" .. (not current and " ✓" or ""),
+            callback = function()
+                save_fn(nil)
+                UIManager:close(self.viewer_font_menu)
+                self.viewer_font_menu = nil
+                if self.appearance_menu then
+                    self:showAppearanceSettings()
+                elseif self.settings_menu then
+                    self:showSettingsMenu()
+                end
+                if self.viewer and self.viewer.reinit then
+                    self.viewer:reinit()
+                end
+            end,
+        },
+    }
+    for _, path in ipairs(fonts) do
+        local name = path:match("([^/]+)$") or path
+        local selected = current == path and " ✓" or ""
+        table.insert(entries, {
+            text = name .. selected,
+            callback = function()
+                save_fn(path)
+                UIManager:close(self.viewer_font_menu)
+                self.viewer_font_menu = nil
+                if self.appearance_menu then
+                    self:showAppearanceSettings()
+                elseif self.settings_menu then
+                    self:showSettingsMenu()
+                end
+                if self.viewer and self.viewer.reinit then
+                    self.viewer:reinit()
+                end
+            end,
+        })
+    end
+    if self.viewer_font_menu then
+        UIManager:close(self.viewer_font_menu)
+    end
+    self.viewer_font_menu = Menu:new{
+        title = title,
+        item_table = entries,
+        is_popout = false,
+        is_borderless = true,
+        covers_fullscreen = true,
+        is_enable_shortcut = false,
+        close_callback = function()
+            self.viewer_font_menu = nil
+            if self.appearance_menu then
+                self:showAppearanceSettings()
+            elseif self.settings_menu then
+                self:showSettingsMenu()
+            end
+        end,
+    }
+    UIManager:show(self.viewer_font_menu, "ui")
+end
+
 function Plugin:showListFontPicker(kind)
     local FontList = require("fontlist")
     local fonts = FontList:getFontList() or {}
@@ -925,11 +1024,8 @@ function Plugin:showSyncSettings()
         },
         {
             icon = "inbox",
-            text = "Articles per sync: " .. tostring(self:articlesPerSync()),
-            callback = function()
-                self:cycleArticlesPerSync()
-                self:showSyncSettings()
-            end,
+            text = "Sync limit: " .. tostring(self:articlesPerSync()),
+            callback = function() self:showSyncLimitSpin() end,
         },
         {
             icon = "move_vertical",
@@ -1015,6 +1111,21 @@ function Plugin:showAppearanceSettings()
             icon = "star",
             text = "Favorite categories…",
             callback = function() self:showFavoriteCategoryPicker() end,
+        },
+        {
+            icon = "type",
+            text = ListFonts.viewerFontLabel("latin"),
+            callback = function() self:showViewerFontPicker("latin") end,
+        },
+        {
+            icon = "type",
+            text = ListFonts.viewerFontLabel("devanagari"),
+            callback = function() self:showViewerFontPicker("devanagari") end,
+        },
+        {
+            icon = "type",
+            text = ListFonts.viewerFontLabel("gujarati"),
+            callback = function() self:showViewerFontPicker("gujarati") end,
         },
         {
             icon = "a_large_small",
@@ -1215,6 +1326,11 @@ function Plugin:showSettingsMenu()
             text = string.format("Queue… (%d pending)", pending),
             callback = function() self:showQueueMenu() end,
         },
+        {
+            icon = self.icons:name("check_circle"),
+            text = "Mark all as read…",
+            callback = function() self:confirmMarkAllRead() end,
+        },
     }
     if self.settings_menu then
         UIManager:close(self.settings_menu)
@@ -1383,6 +1499,7 @@ function Plugin:closeHomeOverlays()
     local keys = {
         "browse_picker",
         "list_font_menu",
+        "viewer_font_menu",
         "settings_menu",
         "fav_cat_panel",
         "cat_icon_panel",

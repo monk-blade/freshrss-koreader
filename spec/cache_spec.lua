@@ -18,6 +18,8 @@ describe("FreshRSS cache", function()
         local article = cache:getArticle("1234567890123456")
         assert.equals("1234567890123456", article.id)
         assert.equals(1, cache:unreadCount())
+        assert.is_true(cache:hasArticle("1234567890123456"))
+        assert.is_false(cache:hasArticle("missing-id"))
     end)
 
     it("queues offline actions", function()
@@ -124,6 +126,15 @@ describe("FreshRSS cache", function()
         assert.equals(1, cache:unreadCountForBrowse({ mode = "feed", feed_id = "feed/1" }))
         assert.equals(1, cache:unreadCountForBrowse({ mode = "starred" }))
         assert.equals(3, cache:unreadCountForBrowse({ mode = "unread" }))
+        cache:setMeta({
+            counts = {
+                unreadcounts = {
+                    { id = "user/-/state/com.google/reading-list", count = 99 },
+                },
+            },
+        })
+        assert.equals(99, cache:unreadCountForBrowse({ mode = "unread" }))
+        assert.equals(3, cache:unreadCountForBrowse({ mode = "all" }))
     end)
 
     it("evicts oldest non-starred articles and keeps starred", function()

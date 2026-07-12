@@ -140,6 +140,23 @@ function Cache:putArticle(article)
     end
 end
 
+---True when the article JSON exists on disk (main cache or pinned favorites/).
+function Cache:hasArticle(id)
+    id = tostring(id or "")
+    if id == "" then return false end
+    local file = io.open(self:path(id), "r")
+    if file then
+        file:close()
+        return true
+    end
+    file = io.open(self:favoritePath(id), "r")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
 function Cache:getArticle(id)
     id = tostring(id or "")
     local file = io.open(self:path(id), "r")
@@ -307,6 +324,30 @@ function Cache:unreadCountForBrowse(browse)
     if mode == "starred" then
         local n = 0
         for _, item in ipairs(self:listByMode("starred", { apply_hidden = false })) do
+            if item.unread then n = n + 1 end
+        end
+        return n
+    end
+    if mode == "all" then
+        local hidden
+        if G_reader_settings then
+            hidden = Cache.readHiddenFeeds(G_reader_settings)
+        end
+        local n = 0
+        for _, item in ipairs(self:listByMode("all", {
+            apply_hidden = true,
+            hidden_feeds = hidden,
+        })) do
+            if item.unread then n = n + 1 end
+        end
+        return n
+    end
+    if mode == "unread" then
+        local reading_list = "user/-/state/com.google/reading-list"
+        local from_meta = self:unreadCountForStream(reading_list)
+        if from_meta ~= nil then return from_meta end
+        local n = 0
+        for _, item in ipairs(self:listByMode("unread", { apply_hidden = true })) do
             if item.unread then n = n + 1 end
         end
         return n
