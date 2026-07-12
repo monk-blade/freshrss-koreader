@@ -20,15 +20,21 @@ describe("FreshRSS list_format helpers", function()
         assert.equals("2024-12-25", ListFormat.formatArticleDate(other_year, noon))
     end)
 
-    it("builds row mandatory as date · feed", function()
+    it("builds row mandatory as feed · post time", function()
         local ts = os.time({ year = 2026, month = 7, day = 11, hour = 8, min = 0, sec = 0 })
         local now = os.time({ year = 2026, month = 7, day = 12, hour = 12, min = 0, sec = 0 })
         local date = ListFormat.formatArticleDate(ts, now)
-        assert.equals(date .. " · Hacker News", ListFormat.rowMandatory({
+        assert.equals("Hacker News · " .. date, ListFormat.rowMandatory({
             updated = ts,
             feed_title = "Hacker News",
         }, now))
+        local today_ts = os.time({ year = 2026, month = 7, day = 12, hour = 9, min = 5, sec = 0 })
+        assert.equals("Feed · " .. os.date("%H:%M", today_ts), ListFormat.rowMandatory({
+            updated = today_ts,
+            feed_title = "Feed",
+        }, now))
         assert.equals("Solo Feed", ListFormat.rowMandatory({ feed_title = "Solo Feed" }, now))
+        assert.equals(date, ListFormat.rowMandatory({ updated = ts }, now))
     end)
 
     it("looks up unread counts by stream id", function()

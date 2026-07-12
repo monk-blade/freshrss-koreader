@@ -9,6 +9,7 @@ local NetworkMgr = require("ui/network/manager")
 local Dispatcher = require("dispatcher")
 local Device = require("device")
 local DataStorage = require("datastorage")
+local SpinWidget = require("ui/widget/spinwidget")
 local util = require("util")
 
 local plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)/[^/]+$")
@@ -730,6 +731,100 @@ function Plugin:showSettingsMenu()
             end,
         },
         {
+            text = "Viewer font size: " .. tostring(Renderer.readFontSize()),
+            callback = function()
+                UIManager:show(SpinWidget:new{
+                    title_text = "Font size",
+                    value = Renderer.readFontSize(),
+                    value_min = Renderer.FONT_SIZE_MIN,
+                    value_max = Renderer.FONT_SIZE_MAX,
+                    default_value = Renderer.DEFAULT_FONT_SIZE,
+                    ok_always_enabled = true,
+                    keep_shown_on_apply = true,
+                    callback = function(spin)
+                        Renderer.saveFontSize(spin.value)
+                        self:showSettingsMenu()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer line height: " .. Renderer.formatLineHeight(Renderer.readLineHeight()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Line height",
+                    info_text = "Article body line spacing",
+                    value = Renderer.readLineHeight(),
+                    value_min = Renderer.LINE_HEIGHT_MIN,
+                    value_max = Renderer.LINE_HEIGHT_MAX,
+                    value_step = Renderer.LINE_HEIGHT_STEP,
+                    precision = "%.2f",
+                    default_value = Renderer.DEFAULT_LINE_HEIGHT,
+                    callback = function(value)
+                        Renderer.saveLineHeight(value)
+                        self:showSettingsMenu()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer side padding: " .. Renderer.formatPad(Renderer.readPadSide()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Side padding",
+                    info_text = "Left and right body padding (em)",
+                    value = Renderer.readPadSide(),
+                    value_min = Renderer.PAD_MIN,
+                    value_max = Renderer.PAD_MAX,
+                    value_step = Renderer.PAD_STEP,
+                    precision = "%.1f",
+                    default_value = Renderer.DEFAULT_PAD_SIDE,
+                    callback = function(value)
+                        Renderer.savePadSide(value)
+                        self:showSettingsMenu()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer top margin: " .. Renderer.formatPad(Renderer.readPadTop()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Top margin",
+                    info_text = "Top body padding (em)",
+                    value = Renderer.readPadTop(),
+                    value_min = Renderer.PAD_MIN,
+                    value_max = Renderer.PAD_MAX,
+                    value_step = Renderer.PAD_STEP,
+                    precision = "%.1f",
+                    default_value = Renderer.DEFAULT_PAD_TOP,
+                    callback = function(value)
+                        Renderer.savePadTop(value)
+                        self:showSettingsMenu()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer bottom margin: " .. Renderer.formatPad(Renderer.readPadBottom()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Bottom margin",
+                    info_text = "Bottom body padding (em)",
+                    value = Renderer.readPadBottom(),
+                    value_min = Renderer.PAD_MIN,
+                    value_max = Renderer.PAD_MAX,
+                    value_step = Renderer.PAD_STEP,
+                    precision = "%.1f",
+                    default_value = Renderer.DEFAULT_PAD_BOTTOM,
+                    callback = function(value)
+                        Renderer.savePadBottom(value)
+                        self:showSettingsMenu()
+                    end,
+                })
+            end,
+        },
+        {
             text = "Images per article: " .. tostring(Images.readMaxImages()),
             callback = function()
                 Images.cycleMaxImages()
@@ -771,6 +866,25 @@ function Plugin:showSettingsMenu()
         {
             text = self:listFontLabel("gujarati"),
             callback = function() self:showListFontPicker("gujarati") end,
+        },
+        {
+            text = "List font size: " .. tostring(ListFonts.readFontSize()),
+            callback = function()
+                UIManager:show(SpinWidget:new{
+                    title_text = "List font size",
+                    value = ListFonts.readFontSize(),
+                    value_min = ListFonts.SIZE_MIN,
+                    value_max = ListFonts.SIZE_MAX,
+                    default_value = ListFonts.DEFAULT_SIZE,
+                    ok_always_enabled = true,
+                    keep_shown_on_apply = true,
+                    callback = function(spin)
+                        ListFonts.saveFontSize(spin.value)
+                        if self.home then self.home:updateList() end
+                        self:showSettingsMenu()
+                    end,
+                })
+            end,
         },
         {
             text = string.format("Pending actions: %d", pending),
@@ -1115,6 +1229,7 @@ function Plugin:openArticle(id, nav_ids)
         end,
         on_star = function()
             article.starred = not article.starred
+            -- putArticle pins to favorites/ when starred, unpins when unstarred.
             self.cache:putArticle(article)
             if self.viewer and self.viewer.refreshActionButtons then
                 self.viewer.article = article

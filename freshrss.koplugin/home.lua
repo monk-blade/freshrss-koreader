@@ -98,6 +98,10 @@ function Home:buildLayout()
     if plugin.list_fonts then
         plugin.list_fonts.apply()
     end
+    local list_font_size = 20
+    if plugin.list_fonts then
+        list_font_size = plugin.list_fonts.readFontSize()
+    end
     self.list = Menu:new{
         title = "",
         no_title = true,
@@ -107,6 +111,9 @@ function Home:buildLayout()
         height = list_height,
         -- Single-line rows keep the list denser (Gujarati titles truncate instead of wrapping).
         multilines_show_more_text = false,
+        -- Hide Q/W/E… shortcut letter boxes (default when Device:hasKeyboard()).
+        is_enable_shortcut = false,
+        items_font_size = list_font_size,
         item_table = plugin:buildItemTable(),
         show_parent = self,
         close_callback = nil,
@@ -145,6 +152,9 @@ function Home:updateList()
         self.plugin.list_fonts.apply()
     end
     if self.list then
+        if self.plugin and self.plugin.list_fonts then
+            self.list.items_font_size = self.plugin.list_fonts.readFontSize()
+        end
         self.list:switchItemTable("", self.plugin:buildItemTable())
     end
     UIManager:setDirty(self, "ui")

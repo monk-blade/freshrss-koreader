@@ -13,6 +13,8 @@ function Cache:new(root)
         file:close()
         if ok and type(data) == "table" then o.index = data end
     end
+    -- Rehydrate permanently pinned favorites (survives index wipe / reinstall).
+    o:loadPinnedFavorites()
     return o
 end
 
@@ -24,6 +26,50 @@ end
 
 function Cache:path(id)
     return self.root .. "/" .. tostring(id):gsub("[^%w_-]", "_") .. ".json"
+end
+
+function Cache:favoritesDir()
+    return self.root .. "/favorites"
+end
+
+function Cache:favoritePath(id)
+    return self:favoritesDir() .. "/" .. tostring(id):gsub("[^%w_-]", "_") .. ".json"
+end
+
+function Cache:isPinnedFavorite(id)
+    id = tostring(id or "")
+    if id == "" then return false end
+    local f = io.open(self:favoritePath(id), "r")
+    if not f then return false end
+    f:close()
+    return true
+end
+
+---Write a permanent copy under favorites/ (survives eviction / cache clean).
+function Cache:pinFavorite(article)
+    if not article or not article.id then return false end
+    local dir = self:favoritesDir()
+    if lfs.attributes(dir, "mode") ~= "directory" then
+        lfs.mkdir(dir)
+    end
+    local path = self:favoritePath(article.id)
+    local file = io.open(path, "w")
+    if not file then return false end
+    local copy = {}
+    for k, v in pairs(article) do copy[k] = v end
+    copy.starred = true
+    copy.pinned = true
+    file:write(json.encode(copy))
+    file:close()
+    return true
+end
+
+function Cache:unpinFavorite(id)
+    id = tostring(id or "")
+    if id == "" then return false end
+    local path = self:favoritePath(id)
+    if os.remove(path) then return true end
+    return false
 end
 
 function Cache:putArticle(article)
@@ -40,12 +86,22 @@ function Cache:putArticle(article)
         starred = article.starred,
         updated = article.updated,
         labels = article.labels,
+        pinned = article.starred and true or nil,
     }
     self:saveIndex()
+    if article.starred then
+        self:pinFavorite(article)
+    elseif self:isPinnedFavorite(id) then
+        self:unpinFavorite(id)
+    end
 end
 
 function Cache:getArticle(id)
+    id = tostring(id or "")
     local file = io.open(self:path(id), "r")
+    if not file then
+        file = io.open(self:favoritePath(id), "r")
+    end
     if not file then return nil end
     local ok, value = pcall(json.decode, file:read("*a"))
     file:close()
@@ -244,9 +300,14 @@ function Cache:articleCount()
 end
 
 ---Delete one article JSON + index entry. Returns true if removed.
+---Pinned favorites (favorites/ copy or starred) are never deleted.
 function Cache:deleteArticle(id)
     id = tostring(id or "")
     if id == "" then return false end
+    local item = self.index[id]
+    if (item and item.starred) or self:isPinnedFavorite(id) then
+        return false
+    end
     local path = self:path(id)
     os.remove(path)
     if self.index[id] then
@@ -278,8 +339,8 @@ function Cache:evictOldest(max_retain)
     local count = #items
     for _, item in ipairs(items) do
         if count <= max_retain then break end
-        if item.starred then
-            -- Never delete starred.
+        if item.starred or self:isPinnedFavorite(item.id) then
+            -- Never delete starred / permanently pinned favorites.
         else
             if self:deleteArticle(item.id) then
                 evicted = evicted + 1
@@ -288,6 +349,46 @@ function Cache:evictOldest(max_retain)
         end
     end
     return evicted
+end
+
+---Ensure favorites/ copies appear in the index (e.g. after reinstall / partial wipe).
+function Cache:loadPinnedFavorites()
+    local dir = self:favoritesDir()
+    if lfs.attributes(dir, "mode") ~= "directory" then return 0 end
+    local loaded = 0
+    for name in lfs.dir(dir) do
+        if name:match("%.json$") then
+            local path = dir .. "/" .. name
+            local file = io.open(path, "r")
+            if file then
+                local ok, article = pcall(json.decode, file:read("*a"))
+                file:close()
+                if ok and type(article) == "table" and article.id then
+                    article.starred = true
+                    article.pinned = true
+                    -- Refresh main cache copy without clearing the pin.
+                    local id = tostring(article.id)
+                    local main = assert(io.open(self:path(id), "w"))
+                    main:write(json.encode(article))
+                    main:close()
+                    self.index[id] = {
+                        id = id,
+                        title = article.title,
+                        feed_title = article.feed_title,
+                        feed_id = article.feed_id,
+                        unread = article.unread,
+                        starred = true,
+                        updated = article.updated,
+                        labels = article.labels,
+                        pinned = true,
+                    }
+                    loaded = loaded + 1
+                end
+            end
+        end
+    end
+    if loaded > 0 then self:saveIndex() end
+    return loaded
 end
 
 local function dirSizeBytes(path)

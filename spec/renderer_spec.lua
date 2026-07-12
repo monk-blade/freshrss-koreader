@@ -68,6 +68,13 @@ end
 package.preload["ui/widget/container/movablecontainer"] = function() return {} end
 package.preload["ui/widget/scrollhtmlwidget"] = function() return {} end
 package.preload["ui/size"] = function() return { padding = { large = 10 } } end
+package.preload["ui/font"] = function()
+    return {
+        getFace = function(_, name, size)
+            return { orig_font = name, orig_size = size or 22 }
+        end,
+    }
+end
 package.preload["ui/widget/titlebar"] = function() return {} end
 package.preload["ui/uimanager"] = function() return { close = function() end, show = function() end, setDirty = function() end } end
 package.preload["ui/widget/verticalgroup"] = function() return {} end
@@ -181,6 +188,14 @@ describe("FreshRSS renderer CSS / view settings", function()
         assert.are.equal(1.2, c)
     end)
 
+    it("clamps continuous line height for SpinWidget", function()
+        assert.are.equal(1.0, Renderer.clampLineHeight(0.5))
+        assert.are.equal(2.5, Renderer.clampLineHeight(9))
+        assert.are.equal(1.45, Renderer.clampLineHeight(1.449))
+        Renderer.saveLineHeight(1.65)
+        assert.are.equal(1.65, Renderer.readLineHeight())
+    end)
+
     it("defaults show images to on", function()
         assert.is_true(Renderer.readShowImages())
     end)
@@ -198,7 +213,10 @@ describe("FreshRSS renderer CSS / view settings", function()
     it("applies justify and body padding in CSS", function()
         local css = Renderer.buildCss({ justify = true, line_height = 1.45, show_images = false })
         assert.truthy(css:find("text%-align: justify"))
-        assert.truthy(css:find("padding: 1em 0%.6em 1em 0%.6em"))
+        -- Defaults: 0.2 / 0.5 / 0.2 → padToPx → 2px / 5px / 2px (screen scale stub is identity)
+        assert.truthy(css:find("padding: 2px 5px 2px 5px", 1, true))
+        assert.falsy(css:find("padding: %d+em"))
+        assert.truthy(css:find("body > %*:first%-child"))
     end)
 
     it("uses left alignment when justify is off", function()
@@ -207,13 +225,13 @@ describe("FreshRSS renderer CSS / view settings", function()
         assert.falsy(css:find("text%-align: justify"))
     end)
 
-    it("cycles side/top/bottom padding values into CSS", function()
-        local side = Renderer.cyclePadSide(0.6)
-        assert.are.equal(1.0, side)
-        local top = Renderer.cyclePadTop(1.0)
-        assert.are.equal(1.5, top)
-        local bottom = Renderer.cyclePadBottom(1.0)
-        assert.are.equal(1.5, bottom)
+    it("saves continuous padding values for SpinWidget", function()
+        Renderer.savePadSide(1.3)
+        assert.are.equal(1.3, Renderer.readPadSide())
+        Renderer.savePadTop(0.0)
+        assert.are.equal(0.0, Renderer.readPadTop())
+        Renderer.savePadBottom(2.7)
+        assert.are.equal(2.7, Renderer.readPadBottom())
         local css = Renderer.buildCss({
             justify = false,
             show_images = false,
@@ -222,6 +240,35 @@ describe("FreshRSS renderer CSS / view settings", function()
             pad_side = 1.4,
             pad_bottom = 2.0,
         })
-        assert.truthy(css:find("padding: 0%.4em 1%.4em 2em 1%.4em"))
+        -- padToPx: 0.4→4, 1.4→14, 2.0→20 (CSS px, not em)
+        assert.truthy(css:find("padding: 4px 14px 20px 14px", 1, true))
+        assert.falsy(css:match("body %{ padding: [%d%.]+em"))
+        assert.are.equal("1.3em", Renderer.formatPad(1.3))
+        assert.are.equal("1.45", Renderer.formatLineHeight(1.45))
+    end)
+
+    it("clamps and persists body and title font sizes", function()
+        assert.are.equal(Renderer.DEFAULT_FONT_SIZE, Renderer.readFontSize())
+        assert.are.equal(Renderer.DEFAULT_TITLE_FONT_SIZE, Renderer.readTitleFontSize())
+        Renderer.saveFontSize(10)
+        assert.are.equal(Renderer.FONT_SIZE_MIN, Renderer.readFontSize())
+        Renderer.saveFontSize(40)
+        assert.are.equal(Renderer.FONT_SIZE_MAX, Renderer.readFontSize())
+        Renderer.saveFontSize(22)
+        assert.are.equal(22, Renderer.readFontSize())
+        Renderer.saveTitleFontSize(8)
+        assert.are.equal(Renderer.FONT_SIZE_MIN, Renderer.readTitleFontSize())
+        Renderer.saveTitleFontSize(99)
+        assert.are.equal(Renderer.FONT_SIZE_MAX, Renderer.readTitleFontSize())
+        Renderer.saveTitleFontSize(28)
+        assert.are.equal(28, Renderer.readTitleFontSize())
+    end)
+
+    it("strips leading empty paragraphs and breaks", function()
+        local html = [[<p></p><p>&nbsp;</p><br/><p>Hello</p>]]
+        local out = Renderer.sanitizeHtml(html)
+        assert.falsy(out:find("^%s*<p>%s*</p>"))
+        assert.truthy(out:find("Hello", 1, true))
+        assert.truthy(out:match("^%s*<p>Hello</p>"))
     end)
 end)

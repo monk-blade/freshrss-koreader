@@ -1,4 +1,4 @@
--- Helpers for denser article-list rows (date + feed mandatory text).
+-- Helpers for denser article-list rows (feed · post time mandatory text).
 local ListFormat = {}
 
 ---Normalize GReader/FreshRSS timestamps (seconds or milliseconds) to epoch seconds.
@@ -28,17 +28,18 @@ function ListFormat.formatArticleDate(ts, now)
     return os.date("%Y-%m-%d", n)
 end
 
----Right-column text: "12:30 · Feed" / "Jul 12 · Feed" / feed-only / date-only.
+---Right-column text: "Feed · 12:30" / "Feed · Jul 12" / feed-only / date-only.
+-- Menu renders this as mandatory (smaller font than the title).
 function ListFormat.rowMandatory(article, now)
     article = article or {}
     local date = ListFormat.formatArticleDate(article.updated or article.published, now)
     local feed = tostring(article.feed_title or "")
     if feed == "" or feed == "nil" then feed = "" end
-    if date and feed ~= "" then
-        return date .. " · " .. feed
+    if feed ~= "" and date then
+        return feed .. " · " .. date
     end
-    if date then return date end
     if feed ~= "" then return feed end
+    if date then return date end
     return nil
 end
 

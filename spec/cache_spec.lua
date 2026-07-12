@@ -88,6 +88,68 @@ describe("FreshRSS cache", function()
         assert.is_nil(cache:getArticle("2"))
     end)
 
+    it("pins favorites permanently and unpins on unstar", function()
+        cache:putArticle({
+            id = "fav-1",
+            title = "Pinned",
+            html = "<p>keep</p>",
+            unread = false,
+            starred = true,
+            updated = 10,
+        })
+        assert.is_true(cache:isPinnedFavorite("fav-1"))
+        local pin = io.open(cache:favoritePath("fav-1"), "r")
+        assert.truthy(pin)
+        pin:close()
+
+        -- Survive deletion of the main cache file via getArticle fallback.
+        os.remove(cache:path("fav-1"))
+        local from_pin = cache:getArticle("fav-1")
+        assert.equals("Pinned", from_pin.title)
+        assert.is_true(from_pin.starred)
+
+        -- Eviction must not remove pinned favorites.
+        for i = 1, 4 do
+            cache:putArticle({
+                id = "n" .. i,
+                title = "N" .. i,
+                unread = false,
+                starred = false,
+                updated = i,
+            })
+        end
+        cache:evictOldest(1)
+        assert.truthy(cache:isPinnedFavorite("fav-1"))
+        assert.truthy(cache:getArticle("fav-1"))
+        assert.is_false(cache:deleteArticle("fav-1"))
+
+        -- Unstar removes the permanent copy.
+        local art = cache:getArticle("fav-1")
+        art.starred = false
+        cache:putArticle(art)
+        assert.is_false(cache:isPinnedFavorite("fav-1"))
+    end)
+
+    it("reloads pinned favorites into a wiped index", function()
+        cache:putArticle({
+            id = "keep-me",
+            title = "Forever",
+            html = "<p>x</p>",
+            unread = false,
+            starred = true,
+            updated = 99,
+        })
+        assert.is_true(cache:isPinnedFavorite("keep-me"))
+        -- Wipe index as if it was lost; favorites/ file remains.
+        cache.index = {}
+        cache:saveIndex()
+        local loaded = cache:loadPinnedFavorites()
+        assert.equals(1, loaded)
+        assert.equals("Forever", cache.index["keep-me"].title)
+        assert.is_true(cache.index["keep-me"].starred)
+        assert.is_true(cache.index["keep-me"].pinned)
+    end)
+
     it("cycles retain caps", function()
         local store = {}
         local settings = {

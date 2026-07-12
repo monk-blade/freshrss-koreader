@@ -6,8 +6,13 @@ local ListFonts = {}
 
 ListFonts.SETTING_LATIN = "freshrss_list_font_latin"
 ListFonts.SETTING_GUJARATI = "freshrss_list_font_gujarati"
+ListFonts.SETTING_SIZE = "freshrss_list_font_size"
 -- MenuItem default in frontend/ui/widget/menu.lua
 ListFonts.MENU_FACE = "smallinfofont"
+-- Match viewer body SpinWidget range; default near Menu adaptive size (~19–22).
+ListFonts.DEFAULT_SIZE = 20
+ListFonts.SIZE_MIN = 12
+ListFonts.SIZE_MAX = 36
 
 -- Prefer these name substrings when settings are empty (normalized match).
 ListFonts.LATIN_HINTS = {
@@ -95,6 +100,24 @@ function ListFonts.saveGujaratiFont(face)
     else
         G_reader_settings:delSetting(ListFonts.SETTING_GUJARATI)
     end
+    G_reader_settings:flush()
+end
+
+function ListFonts.clampFontSize(size)
+    size = tonumber(size) or ListFonts.DEFAULT_SIZE
+    if size < ListFonts.SIZE_MIN then size = ListFonts.SIZE_MIN end
+    if size > ListFonts.SIZE_MAX then size = ListFonts.SIZE_MAX end
+    return math.floor(size + 0.5)
+end
+
+function ListFonts.readFontSize()
+    local size = tonumber(G_reader_settings:readSetting(ListFonts.SETTING_SIZE))
+    if not size then return ListFonts.DEFAULT_SIZE end
+    return ListFonts.clampFontSize(size)
+end
+
+function ListFonts.saveFontSize(size)
+    G_reader_settings:saveSetting(ListFonts.SETTING_SIZE, ListFonts.clampFontSize(size))
     G_reader_settings:flush()
 end
 

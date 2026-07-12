@@ -2,6 +2,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ButtonTable = require("ui/widget/buttontable")
 local Device = require("device")
+local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
@@ -25,42 +26,62 @@ local Renderer = {}
 
 local HTML_MAX_BYTES = 400 * 1024
 local DEFAULT_FONT_SIZE = 20
+local DEFAULT_TITLE_FONT_SIZE = 24
+local FONT_SIZE_MIN = 12
+local FONT_SIZE_MAX = 36
 local DEFAULT_LINE_HEIGHT = 1.45
+local LINE_HEIGHT_MIN = 1.0
+local LINE_HEIGHT_MAX = 2.5
+local LINE_HEIGHT_STEP = 0.05
+-- Legacy discrete presets (still used by cycleLineHeight for quick tap).
 local LINE_HEIGHTS = { 1.2, 1.45, 1.7 }
 local DEFAULT_JUSTIFY = true
-local DEFAULT_PAD_TOP = 1.0
-local DEFAULT_PAD_SIDE = 0.6
-local DEFAULT_PAD_BOTTOM = 1.0
-local PAD_TOP_VALUES = { 0.4, 0.7, 1.0, 1.5, 2.0 }
-local PAD_SIDE_VALUES = { 0.3, 0.6, 1.0, 1.4, 1.8 }
-local PAD_BOTTOM_VALUES = { 0.4, 0.7, 1.0, 1.5, 2.0 }
+local DEFAULT_PAD_TOP = 0.2
+local DEFAULT_PAD_SIDE = 0.5
+local DEFAULT_PAD_BOTTOM = 0.2
+local PAD_MIN = 0.0
+local PAD_MAX = 3.0
+local PAD_STEP = 0.1
+-- Legacy discrete presets for cycle helpers / tests.
+local PAD_TOP_VALUES = { 0.0, 0.2, 0.5, 1.0, 1.5 }
+local PAD_SIDE_VALUES = { 0.2, 0.5, 0.8, 1.2, 1.6 }
+local PAD_BOTTOM_VALUES = { 0.0, 0.2, 0.5, 1.0, 1.5 }
 
-local function emStr(n)
-    n = tonumber(n) or 0
-    if math.abs(n - math.floor(n + 0.0001)) < 0.001 then
-        return string.format("%d", math.floor(n + 0.0001))
+---Convert spacing setting (em-like units) to CSS px independent of article font size.
+---MuPDF resolves `em` against the large body font, which made "1em" look huge.
+local function padToPx(em)
+    em = tonumber(em) or 0
+    if em < 0 then em = 0 end
+    local base = em * 10 -- 1.0 setting ≈ 10 CSS px before screen scale
+    local ok, Device = pcall(require, "device")
+    if ok and Device and Device.screen and Device.screen.scaleBySize then
+        return math.floor(Device.screen:scaleBySize(base) + 0.5)
     end
-    return string.format("%.1f", n)
+    return math.floor(base + 0.5)
 end
 
 local function cssBase(line_height, show_images, justify, pad_top, pad_side, pad_bottom)
     local lh = tonumber(line_height) or DEFAULT_LINE_HEIGHT
     local align_css = justify and "text-align: justify; " or "text-align: left; "
     local img_css = show_images
-        and "img { display: block; max-width: 100%; height: auto; margin: 0.6em 0; }"
+        and "img { display: block; max-width: 100%; height: auto; margin: 0.5em 0; }"
         or "img { display: none; }"
-    local top = emStr(pad_top or DEFAULT_PAD_TOP)
-    local side = emStr(pad_side or DEFAULT_PAD_SIDE)
-    local bottom = emStr(pad_bottom or DEFAULT_PAD_BOTTOM)
+    local top = padToPx(pad_top or DEFAULT_PAD_TOP)
+    local side = padToPx(pad_side or DEFAULT_PAD_SIDE)
+    local bottom = padToPx(pad_bottom or DEFAULT_PAD_BOTTOM)
     return string.format([[
-body { margin: 0; padding: %sem %sem %sem %sem; line-height: %s; %s}
-p { margin: 0.6em 0; line-height: %s; %s}
-h1, h2, h3, h4 { margin: 0.8em 0 0.4em; line-height: 1.25; }
+html, body { margin: 0 !important; }
+body { padding: %dpx %dpx %dpx %dpx; line-height: %s; %s}
+body > *:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+p { margin: 0.35em 0; line-height: %s; %s}
+p:first-child { margin-top: 0; }
+h1, h2, h3, h4 { margin: 0.6em 0 0.3em; line-height: 1.25; }
+h1:first-child, h2:first-child, h3:first-child, h4:first-child { margin-top: 0; }
 a { text-decoration: underline; }
-blockquote { margin: 0.6em 0; padding-left: 0.8em; border-left: 2px solid #888; }
+blockquote { margin: 0.5em 0; padding-left: 0.8em; border-left: 2px solid #888; }
 pre, code { font-family: monospace; }
 pre { white-space: pre-wrap; }
-ul, ol { margin: 0.5em 0; padding-left: 1.4em; }
+ul, ol { margin: 0.4em 0; padding-left: 1.4em; }
 %s
 ]], top, side, bottom, side, tostring(lh), align_css, tostring(lh), align_css, img_css)
 end
@@ -110,6 +131,18 @@ function Renderer.sanitizeHtml(html)
     body = body:gsub("<VIDEO[%s>].-</VIDEO>", "")
     body = body:gsub("<audio[%s>].-</audio>", "")
     body = body:gsub("<AUDIO[%s>].-</AUDIO>", "")
+    -- Drop leading empty paragraphs / breaks that create a fake top margin.
+    for _ = 1, 5 do
+        local trimmed = body
+            :gsub("^%s+", "")
+            :gsub("^<%s*[pP][^>]*>%s*<%s*/%s*[pP]%s*>", "")
+            :gsub("^<%s*[pP][^>]*>%s*&nbsp;%s*<%s*/%s*[pP]%s*>", "")
+            :gsub("^<%s*[pP][^>]*>%s*<br%s*/?%s*>%s*<%s*/%s*[pP]%s*>", "")
+            :gsub("^<%s*br%s*/?%s*>", "")
+            :gsub("^&nbsp;", "")
+        if trimmed == body then break end
+        body = trimmed
+    end
     -- Keep local <img src="file">; replace remote / missing with placeholder.
     body = body:gsub("<%s*[iI][mM][gG][^>]*>", function(tag)
         local src = tag:match("[sS][rR][cC]%s*=%s*\"([^\"]+)\"")
@@ -172,13 +205,32 @@ end
 function Renderer.readFontSize()
     local size = tonumber(G_reader_settings:readSetting("freshrss_viewer_font_size"))
     if not size then return DEFAULT_FONT_SIZE end
-    if size < 12 then size = 12 end
-    if size > 36 then size = 36 end
+    if size < FONT_SIZE_MIN then size = FONT_SIZE_MIN end
+    if size > FONT_SIZE_MAX then size = FONT_SIZE_MAX end
     return size
 end
 
 function Renderer.saveFontSize(size)
+    size = tonumber(size) or DEFAULT_FONT_SIZE
+    if size < FONT_SIZE_MIN then size = FONT_SIZE_MIN end
+    if size > FONT_SIZE_MAX then size = FONT_SIZE_MAX end
     G_reader_settings:saveSetting("freshrss_viewer_font_size", size)
+    G_reader_settings:flush()
+end
+
+function Renderer.readTitleFontSize()
+    local size = tonumber(G_reader_settings:readSetting("freshrss_viewer_title_font_size"))
+    if not size then return DEFAULT_TITLE_FONT_SIZE end
+    if size < FONT_SIZE_MIN then size = FONT_SIZE_MIN end
+    if size > FONT_SIZE_MAX then size = FONT_SIZE_MAX end
+    return size
+end
+
+function Renderer.saveTitleFontSize(size)
+    size = tonumber(size) or DEFAULT_TITLE_FONT_SIZE
+    if size < FONT_SIZE_MIN then size = FONT_SIZE_MIN end
+    if size > FONT_SIZE_MAX then size = FONT_SIZE_MAX end
+    G_reader_settings:saveSetting("freshrss_viewer_title_font_size", size)
     G_reader_settings:flush()
 end
 
@@ -200,29 +252,39 @@ end
 function Renderer.readLineHeight()
     local lh = tonumber(G_reader_settings:readSetting("freshrss_viewer_line_height"))
     if not lh then return DEFAULT_LINE_HEIGHT end
-    for _, v in ipairs(LINE_HEIGHTS) do
-        if math.abs(v - lh) < 0.001 then return v end
-    end
-    return DEFAULT_LINE_HEIGHT
+    return Renderer.clampLineHeight(lh)
+end
+
+function Renderer.clampLineHeight(lh)
+    lh = tonumber(lh) or DEFAULT_LINE_HEIGHT
+    if lh < LINE_HEIGHT_MIN then lh = LINE_HEIGHT_MIN end
+    if lh > LINE_HEIGHT_MAX then lh = LINE_HEIGHT_MAX end
+    return math.floor(lh * 100 + 0.5) / 100
 end
 
 function Renderer.saveLineHeight(lh)
-    G_reader_settings:saveSetting("freshrss_viewer_line_height", lh)
+    G_reader_settings:saveSetting("freshrss_viewer_line_height", Renderer.clampLineHeight(lh))
     G_reader_settings:flush()
 end
 
 function Renderer.cycleLineHeight(current)
     current = tonumber(current) or Renderer.readLineHeight()
     local idx = 1
+    local best_dist = math.huge
     for i, v in ipairs(LINE_HEIGHTS) do
-        if math.abs(v - current) < 0.001 then
+        local d = math.abs(v - current)
+        if d < best_dist then
+            best_dist = d
             idx = i
-            break
         end
     end
     local next_lh = LINE_HEIGHTS[(idx % #LINE_HEIGHTS) + 1]
     Renderer.saveLineHeight(next_lh)
     return next_lh
+end
+
+function Renderer.formatLineHeight(lh)
+    return string.format("%.2f", Renderer.clampLineHeight(lh))
 end
 
 function Renderer.readShowImages()
@@ -247,22 +309,28 @@ function Renderer.saveJustifyText(on)
     G_reader_settings:flush()
 end
 
-local function readEmSetting(key, default, allowed)
+local function clampEm(value, default)
+    value = tonumber(value) or default
+    if value < PAD_MIN then value = PAD_MIN end
+    if value > PAD_MAX then value = PAD_MAX end
+    return math.floor(value * 10 + 0.5) / 10
+end
+
+local function readEmSetting(key, default)
     local value = tonumber(G_reader_settings:readSetting(key))
     if not value then return default end
-    for _, v in ipairs(allowed) do
-        if math.abs(v - value) < 0.001 then return v end
-    end
-    return default
+    return clampEm(value, default)
 end
 
 local function cycleEmSetting(key, current, allowed, default)
     current = tonumber(current) or default
     local idx = 1
+    local best_dist = math.huge
     for i, v in ipairs(allowed) do
-        if math.abs(v - current) < 0.001 then
+        local d = math.abs(v - current)
+        if d < best_dist then
+            best_dist = d
             idx = i
-            break
         end
     end
     local next_v = allowed[(idx % #allowed) + 1]
@@ -272,11 +340,11 @@ local function cycleEmSetting(key, current, allowed, default)
 end
 
 function Renderer.readPadTop()
-    return readEmSetting("freshrss_viewer_pad_top", DEFAULT_PAD_TOP, PAD_TOP_VALUES)
+    return readEmSetting("freshrss_viewer_pad_top", DEFAULT_PAD_TOP)
 end
 
 function Renderer.savePadTop(v)
-    G_reader_settings:saveSetting("freshrss_viewer_pad_top", tonumber(v) or DEFAULT_PAD_TOP)
+    G_reader_settings:saveSetting("freshrss_viewer_pad_top", clampEm(v, DEFAULT_PAD_TOP))
     G_reader_settings:flush()
 end
 
@@ -285,11 +353,11 @@ function Renderer.cyclePadTop(current)
 end
 
 function Renderer.readPadSide()
-    return readEmSetting("freshrss_viewer_pad_side", DEFAULT_PAD_SIDE, PAD_SIDE_VALUES)
+    return readEmSetting("freshrss_viewer_pad_side", DEFAULT_PAD_SIDE)
 end
 
 function Renderer.savePadSide(v)
-    G_reader_settings:saveSetting("freshrss_viewer_pad_side", tonumber(v) or DEFAULT_PAD_SIDE)
+    G_reader_settings:saveSetting("freshrss_viewer_pad_side", clampEm(v, DEFAULT_PAD_SIDE))
     G_reader_settings:flush()
 end
 
@@ -298,16 +366,45 @@ function Renderer.cyclePadSide(current)
 end
 
 function Renderer.readPadBottom()
-    return readEmSetting("freshrss_viewer_pad_bottom", DEFAULT_PAD_BOTTOM, PAD_BOTTOM_VALUES)
+    return readEmSetting("freshrss_viewer_pad_bottom", DEFAULT_PAD_BOTTOM)
 end
 
 function Renderer.savePadBottom(v)
-    G_reader_settings:saveSetting("freshrss_viewer_pad_bottom", tonumber(v) or DEFAULT_PAD_BOTTOM)
+    G_reader_settings:saveSetting("freshrss_viewer_pad_bottom", clampEm(v, DEFAULT_PAD_BOTTOM))
     G_reader_settings:flush()
 end
 
 function Renderer.cyclePadBottom(current)
     return cycleEmSetting("freshrss_viewer_pad_bottom", current, PAD_BOTTOM_VALUES, DEFAULT_PAD_BOTTOM)
+end
+
+function Renderer.formatPad(v)
+    return string.format("%.1fem", clampEm(v, 0))
+end
+
+---Shared SpinWidget for continuous viewer spacing / line-height.
+function Renderer.showSpacingSpin(opts)
+    opts = opts or {}
+    local UIManager = require("ui/uimanager")
+    local SpinWidget = require("ui/widget/spinwidget")
+    local widget = SpinWidget:new{
+        title_text = opts.title or "Value",
+        info_text = opts.info_text,
+        value = opts.value,
+        value_min = opts.value_min,
+        value_max = opts.value_max,
+        value_step = opts.value_step,
+        value_hold_step = opts.value_hold_step or (opts.value_step * 5),
+        precision = opts.precision or "%.1f",
+        default_value = opts.default_value,
+        ok_always_enabled = true,
+        keep_shown_on_apply = opts.keep_shown_on_apply ~= false,
+        callback = function(spin)
+            if opts.callback then opts.callback(spin.value) end
+        end,
+    }
+    UIManager:show(widget)
+    return widget
 end
 
 local ArticleViewer = InputContainer:extend{
@@ -326,6 +423,7 @@ function ArticleViewer:init()
     self.callbacks = self.callbacks or {}
     self.icons = self.icons or self.callbacks.icons
     self.font_size = Renderer.readFontSize()
+    self.title_font_size = Renderer.readTitleFontSize()
     self.font_face = Renderer.readFontFace()
     self.line_height = Renderer.readLineHeight()
     self.show_images = Renderer.readShowImages()
@@ -463,7 +561,7 @@ function ArticleViewer:refreshActionButtons()
     end
 end
 
-function ArticleViewer:build()
+function ArticleViewer:_buildTitleBar()
     local article = self.article or {}
     local title = util.htmlEntitiesToUtf8(tostring(article.title or "Untitled"))
     local published = tonumber(article.published) or os.time()
@@ -482,6 +580,7 @@ function ArticleViewer:build()
         fullscreen = true,
         title = title,
         subtitle = subtitle,
+        title_face = Font:getFace("smalltfont", self.title_font_size),
         title_multilines = true,
         with_bottom_line = true,
         title_top_padding = Size.padding.small,
@@ -495,6 +594,11 @@ function ArticleViewer:build()
         close_callback = function() self:onClose() end,
         show_parent = self,
     }
+end
+
+function ArticleViewer:build()
+    local width = self.dimen.w
+    self:_buildTitleBar()
 
     self.button_table = ButtonTable:new{
         width = width,
@@ -524,6 +628,11 @@ function ArticleViewer:build()
         dimen = self.region,
         self.frame,
     }
+end
+
+function ArticleViewer:reinitTitle()
+    self:_buildTitleBar()
+    self:reinit()
 end
 
 function ArticleViewer:_availableHeight()
@@ -685,14 +794,39 @@ function ArticleViewer:onShowViewSettings()
                     local widget = SpinWidget:new{
                         title_text = "Font size",
                         value = self.font_size,
-                        value_min = 12,
-                        value_max = 36,
+                        value_min = FONT_SIZE_MIN,
+                        value_max = FONT_SIZE_MAX,
                         default_value = DEFAULT_FONT_SIZE,
                         keep_shown_on_apply = true,
                         callback = function(spin)
                             self.font_size = spin.value
                             Renderer.saveFontSize(self.font_size)
                             self:reinit()
+                        end,
+                    }
+                    UIManager:show(widget)
+                end,
+            },
+        },
+        {
+            {
+                text_func = function()
+                    return string.format("Title font size: %d", self.title_font_size)
+                end,
+                align = "left",
+                callback = function()
+                    UIManager:close(dialog)
+                    local widget = SpinWidget:new{
+                        title_text = "Title font size",
+                        value = self.title_font_size,
+                        value_min = FONT_SIZE_MIN,
+                        value_max = FONT_SIZE_MAX,
+                        default_value = DEFAULT_TITLE_FONT_SIZE,
+                        keep_shown_on_apply = true,
+                        callback = function(spin)
+                            self.title_font_size = spin.value
+                            Renderer.saveTitleFontSize(self.title_font_size)
+                            self:reinitTitle()
                         end,
                     }
                     UIManager:show(widget)
@@ -714,13 +848,26 @@ function ArticleViewer:onShowViewSettings()
         {
             {
                 text_func = function()
-                    return string.format("Line height: %s", tostring(self.line_height))
+                    return string.format("Line height: %s", Renderer.formatLineHeight(self.line_height))
                 end,
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    self.line_height = Renderer.cycleLineHeight(self.line_height)
-                    self:reinit()
+                    Renderer.showSpacingSpin({
+                        title = "Line height",
+                        info_text = "Article body line spacing",
+                        value = self.line_height,
+                        value_min = LINE_HEIGHT_MIN,
+                        value_max = LINE_HEIGHT_MAX,
+                        value_step = LINE_HEIGHT_STEP,
+                        precision = "%.2f",
+                        default_value = DEFAULT_LINE_HEIGHT,
+                        callback = function(value)
+                            self.line_height = Renderer.clampLineHeight(value)
+                            Renderer.saveLineHeight(self.line_height)
+                            self:reinit()
+                        end,
+                    })
                 end,
             },
         },
@@ -758,39 +905,79 @@ function ArticleViewer:onShowViewSettings()
         {
             {
                 text_func = function()
-                    return string.format("Side padding: %sem", tostring(self.pad_side))
+                    return "Side padding: " .. Renderer.formatPad(self.pad_side)
                 end,
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    self.pad_side = Renderer.cyclePadSide(self.pad_side)
-                    self:reinit()
+                    Renderer.showSpacingSpin({
+                        title = "Side padding",
+                        info_text = "Left and right body padding (em)",
+                        value = self.pad_side,
+                        value_min = PAD_MIN,
+                        value_max = PAD_MAX,
+                        value_step = PAD_STEP,
+                        precision = "%.1f",
+                        default_value = DEFAULT_PAD_SIDE,
+                        callback = function(value)
+                            self.pad_side = value
+                            Renderer.savePadSide(value)
+                            self.pad_side = Renderer.readPadSide()
+                            self:reinit()
+                        end,
+                    })
                 end,
             },
         },
         {
             {
                 text_func = function()
-                    return string.format("Top margin: %sem", tostring(self.pad_top))
+                    return "Top margin: " .. Renderer.formatPad(self.pad_top)
                 end,
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    self.pad_top = Renderer.cyclePadTop(self.pad_top)
-                    self:reinit()
+                    Renderer.showSpacingSpin({
+                        title = "Top margin",
+                        info_text = "Top body padding (em)",
+                        value = self.pad_top,
+                        value_min = PAD_MIN,
+                        value_max = PAD_MAX,
+                        value_step = PAD_STEP,
+                        precision = "%.1f",
+                        default_value = DEFAULT_PAD_TOP,
+                        callback = function(value)
+                            Renderer.savePadTop(value)
+                            self.pad_top = Renderer.readPadTop()
+                            self:reinit()
+                        end,
+                    })
                 end,
             },
         },
         {
             {
                 text_func = function()
-                    return string.format("Bottom margin: %sem", tostring(self.pad_bottom))
+                    return "Bottom margin: " .. Renderer.formatPad(self.pad_bottom)
                 end,
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    self.pad_bottom = Renderer.cyclePadBottom(self.pad_bottom)
-                    self:reinit()
+                    Renderer.showSpacingSpin({
+                        title = "Bottom margin",
+                        info_text = "Bottom body padding (em)",
+                        value = self.pad_bottom,
+                        value_min = PAD_MIN,
+                        value_max = PAD_MAX,
+                        value_step = PAD_STEP,
+                        precision = "%.1f",
+                        default_value = DEFAULT_PAD_BOTTOM,
+                        callback = function(value)
+                            Renderer.savePadBottom(value)
+                            self.pad_bottom = Renderer.readPadBottom()
+                            self:reinit()
+                        end,
+                    })
                 end,
             },
         },
@@ -901,9 +1088,21 @@ end
 Renderer.ArticleViewer = ArticleViewer
 Renderer.HTML_MAX_BYTES = HTML_MAX_BYTES
 Renderer.DEFAULT_FONT_SIZE = DEFAULT_FONT_SIZE
+Renderer.DEFAULT_TITLE_FONT_SIZE = DEFAULT_TITLE_FONT_SIZE
+Renderer.FONT_SIZE_MIN = FONT_SIZE_MIN
+Renderer.FONT_SIZE_MAX = FONT_SIZE_MAX
 Renderer.DEFAULT_LINE_HEIGHT = DEFAULT_LINE_HEIGHT
+Renderer.LINE_HEIGHT_MIN = LINE_HEIGHT_MIN
+Renderer.LINE_HEIGHT_MAX = LINE_HEIGHT_MAX
+Renderer.LINE_HEIGHT_STEP = LINE_HEIGHT_STEP
 Renderer.DEFAULT_JUSTIFY = DEFAULT_JUSTIFY
 Renderer.LINE_HEIGHTS = LINE_HEIGHTS
+Renderer.DEFAULT_PAD_TOP = DEFAULT_PAD_TOP
+Renderer.DEFAULT_PAD_SIDE = DEFAULT_PAD_SIDE
+Renderer.DEFAULT_PAD_BOTTOM = DEFAULT_PAD_BOTTOM
+Renderer.PAD_MIN = PAD_MIN
+Renderer.PAD_MAX = PAD_MAX
+Renderer.PAD_STEP = PAD_STEP
 Renderer.Images = Images
 
 return Renderer
