@@ -8,18 +8,20 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 - Full-screen home with FreshRSS brand mark (tap to sync) and icon action bar (**Browse / Mark all / Settings**)
 - Denser article list: unread/star markers, **published date · feed** on each row, single-line titles
 - Browse modes: All / Unread / Starred / Feeds / Categories (Feeds list shows **unread counts** from last sync)
-- Separate Settings menu (connection, auto-refresh, sync filter, articles per sync, image caps, list fonts, queue)
+- **Cache retention**: max retained articles (500–5000), auto-evict oldest non-starred after sync, Clean cache now, approximate cache size in Settings
+- Separate Settings menu (connection, auto-refresh, mark-read-on-open, sync filter, articles per sync, cache, image caps/timeouts, list fonts, queue)
+- **Mark read on open** (default on); turn off to leave articles unread when opening
 - **List fonts**: Latin (e.g. Roboto Condensed) + Gujarati fallback (e.g. Noto Serif Gujarati) — install fonts in KOReader’s fonts folder, then pick under Settings
 - Auto-refresh on open **off by default** (opt-in in Settings)
-- Background sync with a progress strip when you refresh
+- Background sync with a progress strip; pending queue is flushed **before** fetching articles
 - Unread-only sync by default (`xt=read`), with optional “all articles” mode
 - Configurable articles-per-sync cap (50 / 100 / 200 / 300) with continuation paging
-- Tunable image sync: images per article, sync image budget, download parallelism
+- Tunable image sync: images per article, sync budget, parallelism, max bytes, timeout profile
 - Mark all as read for the current browse stream
-- HTML article viewer with **View settings** (☰: font size/face, line height, show images, open original link)
-- Local image download into the cache (MuPDF never fetches remote URLs); images prefetch during sync with bounded parallel downloads and rewrite to relative filenames via MuPDF’s `html_resource_directory`
+- HTML article viewer with **View settings** (☰: font, line height, images, justify, **side/top/bottom margins**) and icon bar: Prev / Unread / Favorite / **Open original** / Next
+- Local image download into the cache (MuPDF never fetches remote URLs); orphan images purged when cache is cleaned
 - Favorite / Mark unread with live button state and sync or “queued offline” notifications
-- Pending-action queue UI (list / flush / clear) with sync summary toast
+- Pending-action queue UI (human-readable rows / flush / clear) with sync summary toast
 - Dispatcher actions: `freshrss_sync`, `freshrss_flush_queue`, `freshrss_open`
 - Lucide + FreshRSS SVG icons (ISC-licensed Lucide assets)
 
@@ -39,9 +41,9 @@ For clearer mixed-script article lists, install **Roboto Condensed** and **Noto 
 
 1. **Tools → FreshRSS** — full-screen list of cached articles (Unread by default). Only the home title-bar **X** (or Back on the list) exits the plugin; closing an article returns to the list.
 2. Tap the **FreshRSS mark** (left of the title) to sync. Tap **Browse** (filter icon) to switch All / Unread / Starred / Feeds / Categories.
-3. Auto-refresh on open is **off** by default (enable under Settings).
+3. Auto-refresh on open is **off** by default (enable under Settings). Use **Mark read on open** to control whether opening marks articles read.
 4. Use the icon bar under the title (**filter** = Browse, **check** = Mark all, **gear** = Settings). Browse mode stays in the title.
-5. In an article: tap the **☰** menu for View settings (font, size, line height, images, original link); swipe/tap to page; use the icon bar for Prev / Mark unread / Favorite / Next (Favorite toggles outline ↔ filled star; toast shows synced vs queued).
+5. In an article: tap the **☰** menu for View settings; use the icon bar for Prev / Mark unread / Favorite / Open original / Next.
 
 ## Development and tests
 

@@ -16,22 +16,17 @@ do
     local lfs = require("libs/libkoreader-lfs")
     local orig_mkdir = lfs.mkdir
     function lfs.attributes(path, mode)
+        local ok = os.execute(string.format('test -d %q', path))
+        if ok == true or ok == 0 then
+            if mode == "mode" then return "directory" end
+            return { mode = "directory", size = 0 }
+        end
         local f = io.open(path, "r")
         if f then
             local size = f:seek("end")
             f:close()
             if mode == "mode" then return "file" end
             return { mode = "file", size = size }
-        end
-        -- directory probe via trailing check / known mkdir
-        if mode == "mode" then
-            local ok = os.execute(string.format('test -d %q', path))
-            if ok == true or ok == 0 then return "directory" end
-            return nil
-        end
-        local ok = os.execute(string.format('test -d %q', path))
-        if ok == true or ok == 0 then
-            return { mode = "directory", size = 0 }
         end
         return nil
     end
@@ -309,5 +304,38 @@ describe("FreshRSS images helpers", function()
         settings_store[Images.SETTING_MAX_IMAGES] = 5
         assert.are.equal(5, #Images.extractImageUrls(html))
         assert.are.equal(3, #Images.extractImageUrls(html, 3))
+    end)
+
+    it("cycles image max bytes and timeout profiles", function()
+        assert.are.equal(1024 * 1024, Images.readMaxBytes())
+        assert.are.equal("default", Images.readTimeoutProfile())
+        local c, t = Images.readTimeouts()
+        assert.are.equal(5, c)
+        assert.are.equal(12, t)
+        assert.are.equal(2 * 1024 * 1024, Images.cycleMaxBytes())
+        assert.are.equal("long", Images.cycleTimeoutProfile())
+        c, t = Images.readTimeouts()
+        assert.are.equal(10, c)
+        assert.are.equal(25, t)
+    end)
+
+    it("purges orphan image files not referenced by keep set", function()
+        local data_dir = os.tmpname()
+        os.remove(data_dir)
+        local lfs = require("libs/libkoreader-lfs")
+        lfs.mkdir(data_dir)
+        local imgdir = Images.ensureDirectory(Images.directory(data_dir))
+        local keep_name = "keep.png"
+        local drop_name = "drop.png"
+        local kf = assert(io.open(imgdir .. "/" .. keep_name, "wb"))
+        kf:write("keep")
+        kf:close()
+        local df = assert(io.open(imgdir .. "/" .. drop_name, "wb"))
+        df:write("drop")
+        df:close()
+        local removed = Images.purgeOrphans(data_dir, { [keep_name] = true })
+        assert.are.equal(1, removed)
+        assert.truthy(io.open(imgdir .. "/" .. keep_name, "r"))
+        assert.is_nil(io.open(imgdir .. "/" .. drop_name, "r"))
     end)
 end)

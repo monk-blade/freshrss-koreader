@@ -49,6 +49,42 @@ function helpers.install_lfs()
             os.execute(string.format('mkdir -p %q', path))
             return true
         end,
+        attributes = function(path, mode)
+            local ok = os.execute(string.format('test -d %q', path))
+            if ok == true or ok == 0 then
+                if mode == "mode" then return "directory" end
+                return { mode = "directory", size = 0 }
+            end
+            local f = io.open(path, "r")
+            if f then
+                local size = f:seek("end")
+                f:close()
+                if mode == "mode" then return "file" end
+                return { mode = "file", size = size }
+            end
+            return nil
+        end,
+        dir = function(path)
+            local names = {}
+            local p = io.popen(string.format('ls -A %q 2>/dev/null', path))
+            if p then
+                for line in p:lines() do
+                    table.insert(names, line)
+                end
+                p:close()
+            end
+            local i = 0
+            return function()
+                i = i + 1
+                return names[i]
+            end
+        end,
+        currentdir = function()
+            local p = io.popen("pwd")
+            local cwd = p and p:read("*l") or "."
+            if p then p:close() end
+            return cwd
+        end,
     }
     package.preload["lfs"] = function() return stub end
     package.preload["libs/libkoreader-lfs"] = function() return stub end

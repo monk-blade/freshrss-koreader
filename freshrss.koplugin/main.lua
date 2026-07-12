@@ -31,6 +31,7 @@ local Plugin = WidgetContainer:extend{
 
 local STAGE_LABELS = {
     login = "Signing in…",
+    queue = "Flushing queue…",
     meta = "Loading feeds…",
     stream = "Fetching articles…",
     cache = "Updating cache…",
@@ -151,6 +152,25 @@ function Plugin:syncUnreadOnly()
     local value = self.settings:readSetting("freshrss_sync_unread_only")
     if value == nil then return true end
     return value and true or false
+end
+
+function Plugin:markReadOnOpen()
+    local value = self.settings:readSetting("freshrss_mark_read_on_open")
+    if value == nil then return true end
+    return value and true or false
+end
+
+function Plugin:cleanCacheNow()
+    local retain = Cache.readMaxRetained(self.settings)
+    local evicted = self.cache:evictOldest(retain)
+    local keep = Images.referencedFilenames(self.cache)
+    local purged = Images.purgeOrphans(self.cache.root, keep)
+    Notification:notify(
+        string.format("Cache clean · %d articles removed · %d images purged", evicted, purged),
+        Notification.SOURCE_ALWAYS_SHOW
+    )
+    if self.home then self:showCached() end
+    return evicted, purged
 end
 
 function Plugin:articlesPerSync()
@@ -318,7 +338,11 @@ function Plugin:startSync(interactive)
         local failed = result and result.flush_failed or 0
         local msg = string.format("Updated · %d fetched (%s) · %d unread", fetched, mode, unread)
         if flushed > 0 or failed > 0 then
-            msg = msg .. string.format(" · queue %d/%d", flushed, flushed + failed)
+            msg = msg .. string.format(" · queue %d ok / %d failed", flushed, failed)
+        end
+        local evicted = result and result.evicted or 0
+        if evicted > 0 then
+            msg = msg .. string.format(" · evicted %d", evicted)
         end
         Notification:notify(msg, Notification.SOURCE_ALWAYS_SHOW)
         if self.home then
@@ -639,7 +663,9 @@ end
 function Plugin:showSettingsMenu()
     local auto = self:autoRefreshEnabled()
     local unread_only = self:syncUnreadOnly()
+    local mark_on_open = self:markReadOnOpen()
     local pending = #self.cache:queuedActions()
+    local cache_size = Cache.formatSize(self.cache:approxSizeBytes())
     ListFonts.maybeShowMissingHint(function(msg)
         UIManager:show(InfoMessage:new{ text = msg, timeout = 6 })
     end)
@@ -652,6 +678,14 @@ function Plugin:showSettingsMenu()
             text = auto and "Auto-refresh on open: on" or "Auto-refresh on open: off",
             callback = function()
                 self.settings:saveSetting("freshrss_auto_refresh", not auto)
+                self.settings:flush()
+                self:showSettingsMenu()
+            end,
+        },
+        {
+            text = mark_on_open and "Mark read on open: on" or "Mark read on open: off",
+            callback = function()
+                self.settings:saveSetting("freshrss_mark_read_on_open", not mark_on_open)
                 self.settings:flush()
                 self:showSettingsMenu()
             end,
@@ -672,6 +706,30 @@ function Plugin:showSettingsMenu()
             end,
         },
         {
+            text = "Cache retain articles: " .. tostring(Cache.readMaxRetained(self.settings)),
+            callback = function()
+                Cache.cycleMaxRetained(self.settings)
+                self:showSettingsMenu()
+            end,
+        },
+        {
+            text = "Cache size ≈ " .. cache_size,
+            select_enabled = false,
+        },
+        {
+            text = "Clean cache now…",
+            callback = function()
+                UIManager:show(ConfirmBox:new{
+                    text = "Remove oldest non-starred articles beyond the retain cap and purge orphan images?",
+                    ok_text = "Clean",
+                    ok_callback = function()
+                        self:cleanCacheNow()
+                        self:showSettingsMenu()
+                    end,
+                })
+            end,
+        },
+        {
             text = "Images per article: " .. tostring(Images.readMaxImages()),
             callback = function()
                 Images.cycleMaxImages()
@@ -689,6 +747,20 @@ function Plugin:showSettingsMenu()
             text = "Image download parallel: " .. tostring(Images.readMaxParallel()),
             callback = function()
                 Images.cycleMaxParallel()
+                self:showSettingsMenu()
+            end,
+        },
+        {
+            text = "Image max size: " .. Images.formatMaxBytesLabel(Images.readMaxBytes()),
+            callback = function()
+                Images.cycleMaxBytes()
+                self:showSettingsMenu()
+            end,
+        },
+        {
+            text = "Image timeouts: " .. Images.readTimeoutProfile(),
+            callback = function()
+                Images.cycleTimeoutProfile()
                 self:showSettingsMenu()
             end,
         },
@@ -752,9 +824,23 @@ function Plugin:showQueueMenu()
         table.insert(entries, { text = "Queue is empty", select_enabled = false })
     else
         for _, action in ipairs(queue) do
-            local state = action.state and "set" or "unset"
+            local verb = tostring(action.action or "?")
+            if verb == "read" then
+                verb = action.state and "Mark read" or "Mark unread"
+            elseif verb == "starred" then
+                verb = action.state and "Favorite" or "Unfavorite"
+            end
+            local title
+            local art = self.cache:getArticle(action.id)
+            if art and art.title then
+                title = util.htmlEntitiesToUtf8(tostring(art.title))
+                if #title > 40 then title = title:sub(1, 37) .. "…" end
+            else
+                local id = tostring(action.id or "")
+                title = #id > 24 and (id:sub(1, 21) .. "…") or id
+            end
             table.insert(entries, {
-                text = string.format("%s · %s · %s", tostring(action.action), state, tostring(action.id)),
+                text = string.format("%s · %s", verb, title),
                 select_enabled = false,
             })
         end
@@ -953,8 +1039,11 @@ function Plugin:openArticle(id, nav_ids)
         index, prev_id, next_id = 1, nil, nil
     end
 
-    article.unread = false
-    self.cache:putArticle(article)
+    local mark_on_open = self:markReadOnOpen()
+    if mark_on_open then
+        article.unread = false
+        self.cache:putArticle(article)
+    end
 
     local function reopen(neighbor_id)
         if self.viewer then
@@ -970,6 +1059,25 @@ function Plugin:openArticle(id, nav_ids)
     if show_images then
         image_map, resource_dir = Images.cachedMap(article.html or "", data_dir)
         resource_dir = Images.ensureDirectory(resource_dir or Images.directory(data_dir))
+    end
+
+    local function openOriginal()
+        local href = article.url
+        if not href or href == "" then
+            UIManager:show(InfoMessage:new{ text = "No original link for this article." })
+            return
+        end
+        UIManager:show(ConfirmBox:new{
+            text = "Open original?\n" .. tostring(href),
+            ok_text = "Open",
+            ok_callback = function()
+                if Device.openLink then
+                    Device:openLink(href)
+                else
+                    UIManager:show(InfoMessage:new{ text = tostring(href) })
+                end
+            end,
+        })
     end
 
     local widget
@@ -1023,6 +1131,7 @@ function Plugin:openArticle(id, nav_ids)
                 end
             end)
         end,
+        on_open_original = openOriginal,
         on_images_enabled = function()
             if widget then
                 UIManager:nextTick(function()
@@ -1046,9 +1155,11 @@ function Plugin:openArticle(id, nav_ids)
     })
     self.viewer = widget
     UIManager:show(widget, "ui")
-    -- Viewer first, then download any missing images and rebuild once.
+    -- Viewer first, then optionally mark read and download images.
     UIManager:nextTick(function()
-        self.sync:applyAction(self:api(), id, "read", true)
+        if mark_on_open then
+            self.sync:applyAction(self:api(), id, "read", true)
+        end
         self:loadViewerImages(article, widget)
     end)
 end

@@ -14,9 +14,18 @@ Images.MAX_REDIRECTS = 5
 Images.SETTING_MAX_IMAGES = "freshrss_image_max_per_article"
 Images.SETTING_SYNC_BUDGET = "freshrss_image_sync_budget"
 Images.SETTING_PARALLEL = "freshrss_image_parallel"
+Images.SETTING_MAX_BYTES = "freshrss_image_max_bytes"
+Images.SETTING_TIMEOUT_PROFILE = "freshrss_image_timeout_profile"
 Images.MAX_IMAGES_CAPS = { 5, 10, 15, 20 }
 Images.SYNC_BUDGET_CAPS = { 20, 50, 100, 150 }
 Images.PARALLEL_CAPS = { 1, 2, 3 }
+Images.MAX_BYTES_CAPS = { 512 * 1024, 1024 * 1024, 2 * 1024 * 1024 }
+Images.TIMEOUT_PROFILES = {
+    short = { connect = 3, total = 8, label = "short" },
+    default = { connect = 5, total = 12, label = "default" },
+    long = { connect = 10, total = 25, label = "long" },
+}
+Images.TIMEOUT_PROFILE_ORDER = { "short", "default", "long" }
 Images.DEFAULT_SYNC_BUDGET = 50
 
 local function cycleCap(current, caps, default)
@@ -83,6 +92,56 @@ function Images.cycleMaxParallel()
     G_reader_settings:saveSetting(Images.SETTING_PARALLEL, next_cap)
     G_reader_settings:flush()
     return next_cap
+end
+
+function Images.readMaxBytes()
+    local raw = G_reader_settings and G_reader_settings:readSetting(Images.SETTING_MAX_BYTES)
+    return clampToCaps(raw, Images.MAX_BYTES_CAPS, Images.MAX_BYTES)
+end
+
+function Images.cycleMaxBytes()
+    local next_cap = cycleCap(Images.readMaxBytes(), Images.MAX_BYTES_CAPS, Images.MAX_BYTES)
+    G_reader_settings:saveSetting(Images.SETTING_MAX_BYTES, next_cap)
+    G_reader_settings:flush()
+    return next_cap
+end
+
+function Images.formatMaxBytesLabel(bytes)
+    bytes = tonumber(bytes) or Images.MAX_BYTES
+    if bytes < 1024 * 1024 then
+        return string.format("%.1f MB", bytes / (1024 * 1024))
+    end
+    if bytes % (1024 * 1024) == 0 then
+        return string.format("%d MB", bytes / (1024 * 1024))
+    end
+    return string.format("%.1f MB", bytes / (1024 * 1024))
+end
+
+function Images.readTimeoutProfile()
+    local key = G_reader_settings and G_reader_settings:readSetting(Images.SETTING_TIMEOUT_PROFILE)
+    if type(key) == "string" and Images.TIMEOUT_PROFILES[key] then
+        return key
+    end
+    return "default"
+end
+
+function Images.readTimeouts()
+    local profile = Images.TIMEOUT_PROFILES[Images.readTimeoutProfile()] or Images.TIMEOUT_PROFILES.default
+    return profile.connect, profile.total
+end
+
+function Images.cycleTimeoutProfile()
+    local current = Images.readTimeoutProfile()
+    local next_key = Images.TIMEOUT_PROFILE_ORDER[1]
+    for i, key in ipairs(Images.TIMEOUT_PROFILE_ORDER) do
+        if key == current then
+            next_key = Images.TIMEOUT_PROFILE_ORDER[i + 1] or Images.TIMEOUT_PROFILE_ORDER[1]
+            break
+        end
+    end
+    G_reader_settings:saveSetting(Images.SETTING_TIMEOUT_PROFILE, next_key)
+    G_reader_settings:flush()
+    return next_key
 end
 
 local VALID_EXT = {
@@ -434,7 +493,7 @@ function Images.downloadOne(url, dir, filename)
             return 1
         end
         bytes = bytes + #chunk
-        if bytes > Images.MAX_BYTES then
+        if bytes > Images.readMaxBytes() then
             capped = true
             if file then file:close(); file = nil end
             return nil, "too large"
@@ -442,7 +501,8 @@ function Images.downloadOne(url, dir, filename)
         return file:write(chunk)
     end
 
-    socketutil:set_timeout(Images.CONNECT_TIMEOUT, Images.TOTAL_TIMEOUT)
+    local connect_t, total_t = Images.readTimeouts()
+    socketutil:set_timeout(connect_t, total_t)
     local ok, code, headers = http.request{
         url = url,
         method = "GET",
@@ -506,7 +566,8 @@ local function succeedJob(job, headers)
 end
 
 local function jobTimedOut(job)
-    return (os.time() - (job.started_at or os.time())) > Images.TOTAL_TIMEOUT
+    local _, total_t = Images.readTimeouts()
+    return (os.time() - (job.started_at or os.time())) > total_t
 end
 
 ---LuaSocket uses "timeout"; LuaSec non-blocking SSL uses wantread/wantwrite.
@@ -645,7 +706,7 @@ end
 local function appendBody(job, data)
     if not data or data == "" then return true end
     job.bytes = job.bytes + #data
-    if job.bytes > Images.MAX_BYTES then
+    if job.bytes > Images.readMaxBytes() then
         failJob(job)
         return false
     end
@@ -1197,4 +1258,44 @@ function Images.cachedMap(html, data_dir)
     end
     return map, Images.absoluteDirectory(dir)
 end
+
+---Collect image filenames referenced by articles currently in cache.
+function Images.referencedFilenames(cache)
+    local keep = {}
+    if not cache or not cache.listByMode then return keep end
+    local dir = Images.directory(cache.root)
+    for _, item in ipairs(cache:listByMode("all")) do
+        local article = cache:getArticle(item.id)
+        if article and article.html and article.html ~= "" then
+            for _, url in ipairs(Images.extractImageUrls(article.html, 50)) do
+                local name = Images.findCachedFilename(dir, url) or Images.filenameForUrl(url)
+                if name then keep[name] = true end
+            end
+        end
+    end
+    return keep
+end
+
+---Delete orphan image files not in keep set. Returns number removed.
+function Images.purgeOrphans(data_dir, keep)
+    keep = keep or {}
+    local dir = Images.directory(data_dir)
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(dir, "mode") ~= "directory" then return 0 end
+    local removed = 0
+    for name in lfs.dir(dir) do
+        if name ~= "." and name ~= ".." and not name:match("%.tmp$") then
+            if not keep[name] then
+                local path = dir .. "/" .. name
+                local attr = lfs.attributes(path)
+                if attr and attr.mode == "file" then
+                    os.remove(path)
+                    removed = removed + 1
+                end
+            end
+        end
+    end
+    return removed
+end
+
 return Images

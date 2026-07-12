@@ -186,4 +186,138 @@ function Cache:clearQueue()
     return n
 end
 
+Cache.SETTING_MAX_RETAINED = "freshrss_cache_max_articles"
+Cache.RETAIN_CAPS = { 500, 1000, 2000, 5000 }
+Cache.DEFAULT_MAX_RETAINED = 1000
+
+local function cycleCap(current, caps, default)
+    current = tonumber(current) or default
+    for i, cap in ipairs(caps) do
+        if cap == current and caps[i + 1] then
+            return caps[i + 1]
+        elseif cap == current then
+            return caps[1]
+        elseif current < cap then
+            return cap
+        end
+    end
+    return caps[1] or default
+end
+
+local function clampToCaps(value, caps, default)
+    value = tonumber(value) or default
+    for _, cap in ipairs(caps) do
+        if cap == value then return value end
+    end
+    local best, best_dist = default, math.huge
+    for _, cap in ipairs(caps) do
+        local d = math.abs(cap - value)
+        if d < best_dist then
+            best, best_dist = cap, d
+        end
+    end
+    return best
+end
+
+function Cache.readMaxRetained(settings)
+    settings = settings or (rawget(_G, "G_reader_settings"))
+    local raw = settings and settings.readSetting and settings:readSetting(Cache.SETTING_MAX_RETAINED)
+    return clampToCaps(raw, Cache.RETAIN_CAPS, Cache.DEFAULT_MAX_RETAINED)
+end
+
+function Cache.cycleMaxRetained(settings)
+    settings = settings or G_reader_settings
+    local next_cap = cycleCap(Cache.readMaxRetained(settings), Cache.RETAIN_CAPS, Cache.DEFAULT_MAX_RETAINED)
+    settings:saveSetting(Cache.SETTING_MAX_RETAINED, next_cap)
+    settings:flush()
+    return next_cap
+end
+
+function Cache:articleCount()
+    local n = 0
+    for key, item in pairs(self.index) do
+        if key ~= "_queue" and key ~= "_meta" and type(item) == "table" and item.id then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+---Delete one article JSON + index entry. Returns true if removed.
+function Cache:deleteArticle(id)
+    id = tostring(id or "")
+    if id == "" then return false end
+    local path = self:path(id)
+    os.remove(path)
+    if self.index[id] then
+        self.index[id] = nil
+        self:saveIndex()
+        return true
+    end
+    return false
+end
+
+---Prune oldest non-starred articles until count <= max_retain.
+---@return number evicted
+function Cache:evictOldest(max_retain)
+    max_retain = tonumber(max_retain) or Cache.DEFAULT_MAX_RETAINED
+    if max_retain < 1 then max_retain = 1 end
+    local items = {}
+    for key, item in pairs(self.index) do
+        if key ~= "_queue" and key ~= "_meta" and type(item) == "table" and item.id then
+            table.insert(items, item)
+        end
+    end
+    if #items <= max_retain then return 0 end
+
+    table.sort(items, function(a, b)
+        return tostring(a.updated or "") < tostring(b.updated or "")
+    end)
+
+    local evicted = 0
+    local count = #items
+    for _, item in ipairs(items) do
+        if count <= max_retain then break end
+        if item.starred then
+            -- Never delete starred.
+        else
+            if self:deleteArticle(item.id) then
+                evicted = evicted + 1
+                count = count - 1
+            end
+        end
+    end
+    return evicted
+end
+
+local function dirSizeBytes(path)
+    local total = 0
+    local ok, iter, dir_obj = pcall(lfs.dir, path)
+    if not ok or not iter then return 0 end
+    for name in iter, dir_obj do
+        if name ~= "." and name ~= ".." then
+            local full = path .. "/" .. name
+            local attr = lfs.attributes(full)
+            if attr and attr.mode == "file" then
+                total = total + (attr.size or 0)
+            elseif attr and attr.mode == "directory" then
+                total = total + dirSizeBytes(full)
+            end
+        end
+    end
+    return total
+end
+
+---Approximate on-disk size of cache root (articles + images), in bytes.
+function Cache:approxSizeBytes()
+    return dirSizeBytes(self.root)
+end
+
+function Cache.formatSize(bytes)
+    bytes = tonumber(bytes) or 0
+    if bytes < 1024 then return string.format("%d B", bytes) end
+    if bytes < 1024 * 1024 then return string.format("%.1f KB", bytes / 1024) end
+    return string.format("%.1f MB", bytes / (1024 * 1024))
+end
+
 return Cache

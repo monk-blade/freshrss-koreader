@@ -28,15 +28,32 @@ local DEFAULT_FONT_SIZE = 20
 local DEFAULT_LINE_HEIGHT = 1.45
 local LINE_HEIGHTS = { 1.2, 1.45, 1.7 }
 local DEFAULT_JUSTIFY = true
+local DEFAULT_PAD_TOP = 1.0
+local DEFAULT_PAD_SIDE = 0.6
+local DEFAULT_PAD_BOTTOM = 1.0
+local PAD_TOP_VALUES = { 0.4, 0.7, 1.0, 1.5, 2.0 }
+local PAD_SIDE_VALUES = { 0.3, 0.6, 1.0, 1.4, 1.8 }
+local PAD_BOTTOM_VALUES = { 0.4, 0.7, 1.0, 1.5, 2.0 }
 
-local function cssBase(line_height, show_images, justify)
+local function emStr(n)
+    n = tonumber(n) or 0
+    if math.abs(n - math.floor(n + 0.0001)) < 0.001 then
+        return string.format("%d", math.floor(n + 0.0001))
+    end
+    return string.format("%.1f", n)
+end
+
+local function cssBase(line_height, show_images, justify, pad_top, pad_side, pad_bottom)
     local lh = tonumber(line_height) or DEFAULT_LINE_HEIGHT
     local align_css = justify and "text-align: justify; " or "text-align: left; "
     local img_css = show_images
         and "img { display: block; max-width: 100%; height: auto; margin: 0.6em 0; }"
         or "img { display: none; }"
+    local top = emStr(pad_top or DEFAULT_PAD_TOP)
+    local side = emStr(pad_side or DEFAULT_PAD_SIDE)
+    local bottom = emStr(pad_bottom or DEFAULT_PAD_BOTTOM)
     return string.format([[
-body { margin: 0; padding: 1em 0.6em; line-height: %s; %s}
+body { margin: 0; padding: %sem %sem %sem %sem; line-height: %s; %s}
 p { margin: 0.6em 0; line-height: %s; %s}
 h1, h2, h3, h4 { margin: 0.8em 0 0.4em; line-height: 1.25; }
 a { text-decoration: underline; }
@@ -45,7 +62,7 @@ pre, code { font-family: monospace; }
 pre { white-space: pre-wrap; }
 ul, ol { margin: 0.5em 0; padding-left: 1.4em; }
 %s
-]], tostring(lh), align_css, tostring(lh), align_css, img_css)
+]], top, side, bottom, side, tostring(lh), align_css, tostring(lh), align_css, img_css)
 end
 
 ---Build MuPDF CSS including optional @font-face (FootnoteWidget-style).
@@ -58,8 +75,14 @@ function Renderer.buildCss(opts)
     if justify == nil then justify = Renderer.readJustifyText() end
     local font_face = opts.font_face
     if font_face == nil then font_face = Renderer.readFontFace() end
+    local pad_top = opts.pad_top
+    if pad_top == nil then pad_top = Renderer.readPadTop() end
+    local pad_side = opts.pad_side
+    if pad_side == nil then pad_side = Renderer.readPadSide() end
+    local pad_bottom = opts.pad_bottom
+    if pad_bottom == nil then pad_bottom = Renderer.readPadBottom() end
 
-    local css = cssBase(line_height, show_images, justify)
+    local css = cssBase(line_height, show_images, justify, pad_top, pad_side, pad_bottom)
     if font_face and font_face ~= "" then
         css = css .. string.format(
             "\n@font-face { font-family: 'FreshRSSFont'; src: url('%s'); }\nbody { font-family: 'FreshRSSFont'; }\n",
@@ -224,6 +247,69 @@ function Renderer.saveJustifyText(on)
     G_reader_settings:flush()
 end
 
+local function readEmSetting(key, default, allowed)
+    local value = tonumber(G_reader_settings:readSetting(key))
+    if not value then return default end
+    for _, v in ipairs(allowed) do
+        if math.abs(v - value) < 0.001 then return v end
+    end
+    return default
+end
+
+local function cycleEmSetting(key, current, allowed, default)
+    current = tonumber(current) or default
+    local idx = 1
+    for i, v in ipairs(allowed) do
+        if math.abs(v - current) < 0.001 then
+            idx = i
+            break
+        end
+    end
+    local next_v = allowed[(idx % #allowed) + 1]
+    G_reader_settings:saveSetting(key, next_v)
+    G_reader_settings:flush()
+    return next_v
+end
+
+function Renderer.readPadTop()
+    return readEmSetting("freshrss_viewer_pad_top", DEFAULT_PAD_TOP, PAD_TOP_VALUES)
+end
+
+function Renderer.savePadTop(v)
+    G_reader_settings:saveSetting("freshrss_viewer_pad_top", tonumber(v) or DEFAULT_PAD_TOP)
+    G_reader_settings:flush()
+end
+
+function Renderer.cyclePadTop(current)
+    return cycleEmSetting("freshrss_viewer_pad_top", current, PAD_TOP_VALUES, DEFAULT_PAD_TOP)
+end
+
+function Renderer.readPadSide()
+    return readEmSetting("freshrss_viewer_pad_side", DEFAULT_PAD_SIDE, PAD_SIDE_VALUES)
+end
+
+function Renderer.savePadSide(v)
+    G_reader_settings:saveSetting("freshrss_viewer_pad_side", tonumber(v) or DEFAULT_PAD_SIDE)
+    G_reader_settings:flush()
+end
+
+function Renderer.cyclePadSide(current)
+    return cycleEmSetting("freshrss_viewer_pad_side", current, PAD_SIDE_VALUES, DEFAULT_PAD_SIDE)
+end
+
+function Renderer.readPadBottom()
+    return readEmSetting("freshrss_viewer_pad_bottom", DEFAULT_PAD_BOTTOM, PAD_BOTTOM_VALUES)
+end
+
+function Renderer.savePadBottom(v)
+    G_reader_settings:saveSetting("freshrss_viewer_pad_bottom", tonumber(v) or DEFAULT_PAD_BOTTOM)
+    G_reader_settings:flush()
+end
+
+function Renderer.cyclePadBottom(current)
+    return cycleEmSetting("freshrss_viewer_pad_bottom", current, PAD_BOTTOM_VALUES, DEFAULT_PAD_BOTTOM)
+end
+
 local ArticleViewer = InputContainer:extend{
     name = "freshrss_article_viewer",
     article = nil,
@@ -244,6 +330,9 @@ function ArticleViewer:init()
     self.line_height = Renderer.readLineHeight()
     self.show_images = Renderer.readShowImages()
     self.justify_text = Renderer.readJustifyText()
+    self.pad_top = Renderer.readPadTop()
+    self.pad_side = Renderer.readPadSide()
+    self.pad_bottom = Renderer.readPadBottom()
     self.image_map = self.callbacks.image_map
     self.html_resource_directory = self.callbacks.html_resource_directory
     self.data_dir = self.callbacks.data_dir
@@ -299,6 +388,12 @@ function ArticleViewer:_actionButtons()
                         if self.callbacks.on_star then self.callbacks.on_star() end
                     end,
                 }),
+                icons:button("book_open", {
+                    enabled = article.url ~= nil and article.url ~= "",
+                    callback = function()
+                        if self.callbacks.on_open_original then self.callbacks.on_open_original() end
+                    end,
+                }),
                 icons:button("chevron_right", {
                     enabled = self.callbacks.next_id ~= nil,
                     callback = function()
@@ -336,6 +431,13 @@ function ArticleViewer:_actionButtons()
                 text = article.starred and "★ Fav" or "☆ Fav",
                 callback = function()
                     if self.callbacks.on_star then self.callbacks.on_star() end
+                end,
+            },
+            {
+                text = "Original",
+                enabled = article.url ~= nil and article.url ~= "",
+                callback = function()
+                    if self.callbacks.on_open_original then self.callbacks.on_open_original() end
                 end,
             },
         },
@@ -456,6 +558,9 @@ function ArticleViewer:_buildHtmlWidget()
         line_height = self.line_height,
         justify = self.justify_text,
         font_face = self.font_face,
+        pad_top = self.pad_top,
+        pad_side = self.pad_side,
+        pad_bottom = self.pad_bottom,
     })
     local widget_opts = {
         html_body = html_body,
@@ -652,14 +757,40 @@ function ArticleViewer:onShowViewSettings()
         },
         {
             {
-                text = "Open original link",
-                enabled = self.article and self.article.url ~= nil,
+                text_func = function()
+                    return string.format("Side padding: %sem", tostring(self.pad_side))
+                end,
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    if self.article and self.article.url and self.callbacks.on_link then
-                        self.callbacks.on_link(self.article.url)
-                    end
+                    self.pad_side = Renderer.cyclePadSide(self.pad_side)
+                    self:reinit()
+                end,
+            },
+        },
+        {
+            {
+                text_func = function()
+                    return string.format("Top margin: %sem", tostring(self.pad_top))
+                end,
+                align = "left",
+                callback = function()
+                    UIManager:close(dialog)
+                    self.pad_top = Renderer.cyclePadTop(self.pad_top)
+                    self:reinit()
+                end,
+            },
+        },
+        {
+            {
+                text_func = function()
+                    return string.format("Bottom margin: %sem", tostring(self.pad_bottom))
+                end,
+                align = "left",
+                callback = function()
+                    UIManager:close(dialog)
+                    self.pad_bottom = Renderer.cyclePadBottom(self.pad_bottom)
+                    self:reinit()
                 end,
             },
         },

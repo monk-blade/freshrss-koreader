@@ -134,13 +134,57 @@ describe("FreshRSS state synchronization", function()
         end)
         assert.is_true(ok)
         assert.equals("login", stages[1])
-        assert.equals("meta", stages[2])
+        assert.equals("queue", stages[2])
+        assert.equals("meta", stages[3])
         local seen = {}
         for _, stage in ipairs(stages) do seen[stage] = true end
         assert.is_true(seen.stream)
         assert.is_true(seen.cache)
         assert.is_true(seen.done)
         assert.equals("done", stages[#stages])
+    end)
+
+    it("flushes the pending queue before fetching the stream", function()
+        local order = {}
+        local queue = {
+            { id = "q1", action = "read", state = true },
+        }
+        local cache = {
+            getArticle = function() return nil end,
+            putArticle = function() end,
+            queuedActions = function() return queue end,
+            dequeue = function()
+                table.insert(order, "dequeue")
+                return table.remove(queue, 1)
+            end,
+            queue = function(_, action)
+                table.insert(queue, action)
+            end,
+            setMeta = function() end,
+        }
+        local settings = { saveSetting = function() end, flush = function() end, readSetting = function() end }
+        local sync = Sync:new(cache, settings)
+        local api = {
+            login = function() return true end,
+            listSubscriptions = function() return {} end,
+            listTags = function() return {} end,
+            unreadCount = function() return {} end,
+            editTag = function()
+                table.insert(order, "editTag")
+                return true
+            end,
+            stream = function()
+                table.insert(order, "stream")
+                return { items = {} }
+            end,
+        }
+        local ok, result = sync:refresh(api)
+        assert.is_true(ok)
+        assert.equals("dequeue", order[1])
+        assert.equals("editTag", order[2])
+        assert.equals("stream", order[3])
+        assert.equals(1, result.flushed)
+        assert.equals(0, result.flush_failed)
     end)
 
     it("paginates stream results using continuation until the article cap", function()

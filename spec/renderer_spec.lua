@@ -198,12 +198,30 @@ describe("FreshRSS renderer CSS / view settings", function()
     it("applies justify and body padding in CSS", function()
         local css = Renderer.buildCss({ justify = true, line_height = 1.45, show_images = false })
         assert.truthy(css:find("text%-align: justify"))
-        assert.truthy(css:find("padding: 1em 0%.6em"))
+        assert.truthy(css:find("padding: 1em 0%.6em 1em 0%.6em"))
     end)
 
     it("uses left alignment when justify is off", function()
         local css = Renderer.buildCss({ justify = false, line_height = 1.45, show_images = false })
         assert.truthy(css:find("text%-align: left"))
         assert.falsy(css:find("text%-align: justify"))
+    end)
+
+    it("cycles side/top/bottom padding values into CSS", function()
+        local side = Renderer.cyclePadSide(0.6)
+        assert.are.equal(1.0, side)
+        local top = Renderer.cyclePadTop(1.0)
+        assert.are.equal(1.5, top)
+        local bottom = Renderer.cyclePadBottom(1.0)
+        assert.are.equal(1.5, bottom)
+        local css = Renderer.buildCss({
+            justify = false,
+            show_images = false,
+            line_height = 1.45,
+            pad_top = 0.4,
+            pad_side = 1.4,
+            pad_bottom = 2.0,
+        })
+        assert.truthy(css:find("padding: 0%.4em 1%.4em 2em 1%.4em"))
     end)
 end)

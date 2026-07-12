@@ -68,4 +68,35 @@ describe("FreshRSS cache", function()
         assert.equals(0, cache:unreadCountForStream("feed/http://empty"))
         assert.is_nil(cache:unreadCountForStream("feed/missing"))
     end)
+
+    it("evicts oldest non-starred articles and keeps starred", function()
+        for i = 1, 5 do
+            cache:putArticle({
+                id = tostring(i),
+                title = "A" .. i,
+                unread = false,
+                starred = (i == 1),
+                updated = i,
+            })
+        end
+        assert.equals(5, cache:articleCount())
+        local evicted = cache:evictOldest(2)
+        assert.equals(3, evicted)
+        assert.equals(2, cache:articleCount())
+        assert.truthy(cache:getArticle("1")) -- starred kept
+        assert.truthy(cache:getArticle("5")) -- newest non-starred kept
+        assert.is_nil(cache:getArticle("2"))
+    end)
+
+    it("cycles retain caps", function()
+        local store = {}
+        local settings = {
+            readSetting = function(_, k) return store[k] end,
+            saveSetting = function(_, k, v) store[k] = v end,
+            flush = function() end,
+        }
+        assert.equals(1000, Cache.readMaxRetained(settings))
+        assert.equals(2000, Cache.cycleMaxRetained(settings))
+        assert.equals(2000, Cache.readMaxRetained(settings))
+    end)
 end)

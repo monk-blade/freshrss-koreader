@@ -206,6 +206,10 @@ function Sync:prefetchImages(items, on_progress)
 end
 
 function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
+    -- Flush queued mark/star actions before fetching so server state is current.
+    report(on_progress, "queue", 0.35)
+    local flush_stats = self:flushQueue(api)
+
     report(on_progress, "meta", 0.40)
     local subscriptions = api:listSubscriptions()
     local tags = api:listTags()
@@ -225,12 +229,28 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
 
     report(on_progress, "cache", 0.90)
     local stored = self:storeStreamItems(items)
+
+    local evicted = 0
+    local purged = 0
+    if self.cache.evictOldest then
+        local retain = 1000
+        if self.settings and self.settings.readSetting then
+            retain = tonumber(self.settings:readSetting("freshrss_cache_max_articles")) or 1000
+        end
+        local caps = { [500] = true, [1000] = true, [2000] = true, [5000] = true }
+        if not caps[retain] then retain = 1000 end
+        evicted = self.cache:evictOldest(retain)
+    end
+    if self.images and self.images.purgeOrphans and self.images.referencedFilenames then
+        local keep = self.images.referencedFilenames(self.cache)
+        purged = self.images.purgeOrphans(self.cache.root, keep)
+    end
+
     report(on_progress, "images", 0.92)
     local img_stats = self:prefetchImages(items, on_progress)
     self.settings:saveSetting("freshrss_last_sync", os.time())
     self.settings:saveSetting("last_sync", os.time())
     self.settings:flush()
-    local flush_stats = self:flushQueue(api)
     report(on_progress, "done", 1.0)
     return true, {
         subscriptions = subscriptions,
@@ -243,6 +263,8 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
         flushed = flush_stats.flushed,
         flush_failed = flush_stats.failed,
         images_downloaded = img_stats and img_stats.downloaded or 0,
+        evicted = evicted,
+        images_purged = purged,
     }
 end
 
