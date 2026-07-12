@@ -1378,13 +1378,28 @@ function Plugin:menuSubtitle()
     return os.date("%Y-%m-%d %H:%M", ts) .. pending_bit
 end
 
-function Plugin:onHomeClosed()
-    if self.list_fonts then
-        self.list_fonts.restore()
+function Plugin:closeHomeOverlays()
+    local keys = {
+        "browse_picker",
+        "list_font_menu",
+        "settings_menu",
+        "fav_cat_panel",
+        "cat_icon_panel",
+    }
+    for _, key in ipairs(keys) do
+        local widget = self[key]
+        if widget then
+            pcall(function() UIManager:close(widget) end)
+            self[key] = nil
+        end
     end
+end
+
+function Plugin:onHomeClosed()
     Status:close()
     self.home = nil
     self.menu = nil
+    self._list_restore = nil
 end
 
 function Plugin:showCached(rebuild_chrome)

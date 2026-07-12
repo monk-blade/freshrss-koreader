@@ -20,6 +20,7 @@ local Screen = Device.screen
 local plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)/[^/]+$")
 local FavCategories = dofile(plugin_dir .. "/fav_categories.lua")
 local SettingsUI = dofile(plugin_dir .. "/settings_ui.lua")
+local Status = dofile(plugin_dir .. "/ui_status.lua")
 
 local Home = InputContainer:extend{
     name = "freshrss_home",
@@ -339,21 +340,49 @@ function Home:onShow()
 end
 
 function Home:onClose()
-    -- Restore fonts before UIManager:close so CoverBrowser/FileManager never
-    -- paints with our remapped smallinfofont / injected fallback faces.
-    if self.plugin and self.plugin.list_fonts then
-        self.plugin.list_fonts.restore()
+    if self._closing then return true end
+    self._closing = true
+
+    -- Stop accepting input while the nested Menu tears down (empty tables, not
+    -- nil — InputContainer pairs() key_events / ges_events on every gesture).
+    self.key_events = {}
+    self.ges_events = {}
+    self.skip_paint = true
+    if self.list then
+        self.list.key_events = {}
+        self.list.skip_paint = true
     end
-    if self.plugin then
-        self.plugin:onHomeClosed()
+
+    local plugin = self.plugin
+    self._close_plugin = plugin
+    self.plugin = nil
+
+    if plugin then
+        pcall(function() plugin:closeHomeOverlays() end)
+        pcall(function() Status:close() end)
     end
-    UIManager:close(self)
+
+    UIManager:close(self, "flashui")
+
+    -- Clear plugin refs after UIManager finishes close/repaint (font restore runs
+    -- in onCloseWidget, before the underlying UI refresh).
+    if plugin then
+        UIManager:nextTick(function()
+            pcall(function() plugin:onHomeClosed() end)
+        end)
+    end
     return true
 end
 
 function Home:onCloseWidget()
-    if self.plugin and self.plugin.list_fonts then
-        self.plugin.list_fonts.restore()
+    -- UIManager:close emits CloseWidget before removing us and refreshing
+    -- CoverBrowser. Restore fontmap here so that refresh never paints with our
+    -- remapped smallinfofont, and never while the article Menu is still dirty.
+    if self._restored_list_fonts then return end
+    self._restored_list_fonts = true
+    local plugin = self._close_plugin or self.plugin
+    if plugin and plugin.list_fonts then
+        pcall(function() plugin.list_fonts.restore() end)
     end
 end
 
