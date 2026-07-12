@@ -1,6 +1,6 @@
 -- Article-list fonts: Latin primary face + Gujarati via Font.fallbacks.
--- KOReader Menu/MenuItem use a single face ("smallinfofont"); there is no
--- per-item font. Missing glyphs fall through Font.fallbacks (Xtext/HarfBuzz).
+-- Latin is applied per Menu update (list_menu.lua) without remapping global
+-- smallinfofont; only Gujarati fallback injection touches shared Font state.
 
 local ListFonts = {}
 
@@ -27,11 +27,9 @@ ListFonts.GUJARATI_HINTS = {
     "gujarati",
 }
 
--- Session overrides while FreshRSS home is open (restore on close).
+-- Session overrides while FreshRSS home is open (Gujarati fallback only).
 local _session = {
     applied = false,
-    saved_fontmap = nil,
-    latin_realname = nil,
     injected_fallback = nil,
     hint_shown = false,
 }
@@ -201,20 +199,6 @@ local function removeFallback(fallbacks, path)
     end
 end
 
-local function clearFaceFallbackCaches(Font)
-    if not Font or not Font.faces then return end
-    for _, face in pairs(Font.faces) do
-        if face then face.fallbacks = nil end
-    end
-end
-
----Invalidate fallback chains after fontmap/fallback list changes.
----Do not nil Font.faces entries on restore: CoverBrowser/bookshelf TextWidgets
----keep face_obj references and evicting the cache entry causes FreeType crashes.
-local function invalidateFaceFallbacks(Font)
-    clearFaceFallbackCaches(Font)
-end
-
 local function fontFileExists(path)
     if type(path) ~= "string" or path == "" then return false end
     local f = io.open(path, "rb")
@@ -225,25 +209,10 @@ local function fontFileExists(path)
     return false
 end
 
----Remap Menu face + ensure Gujarati in Font.fallbacks while home is open.
+---Ensure Gujarati is in Font.fallbacks while home is open (Latin is scoped in list_menu).
 function ListFonts.apply()
     local Font = require("ui/font")
-    if not _session.applied then
-        _session.saved_fontmap = Font.fontmap[ListFonts.MENU_FACE]
-    end
 
-    local latin = ListFonts.resolveLatinFont()
-    if latin and not fontFileExists(latin) then
-        latin = nil
-    end
-    _session.latin_realname = latin
-    if latin then
-        Font.fontmap[ListFonts.MENU_FACE] = latin
-    else
-        Font.fontmap[ListFonts.MENU_FACE] = _session.saved_fontmap
-    end
-
-    -- Drop a previous injection before re-resolving.
     if _session.injected_fallback then
         removeFallback(Font.fallbacks, _session.injected_fallback)
         _session.injected_fallback = nil
@@ -254,33 +223,23 @@ function ListFonts.apply()
         gujarati = nil
     end
     if gujarati and not fallbackHas(Font.fallbacks, gujarati) then
-        -- After primary UI sans (index 1); HarfBuzz walks fallbacks for missing glyphs.
         local insert_at = 2
         if insert_at > #Font.fallbacks + 1 then insert_at = #Font.fallbacks + 1 end
         table.insert(Font.fallbacks, insert_at, gujarati)
         _session.injected_fallback = gujarati
     end
 
-    invalidateFaceFallbacks(Font)
     _session.applied = true
 end
 
----Restore fontmap / fallbacks after home closes.
----Runs deferred (after close repaint) so underlying menus never paint against
----evicted face_obj handles still held by TextWidgets.
+---Restore Gujarati fallback injection after home closes.
 function ListFonts.restore()
     if not _session.applied then return end
     local Font = require("ui/font")
-    if _session.saved_fontmap ~= nil then
-        Font.fontmap[ListFonts.MENU_FACE] = _session.saved_fontmap
-    end
     if _session.injected_fallback then
         removeFallback(Font.fallbacks, _session.injected_fallback)
     end
-    invalidateFaceFallbacks(Font)
     _session.applied = false
-    _session.saved_fontmap = nil
-    _session.latin_realname = nil
     _session.injected_fallback = nil
     _session.hint_shown = false
 end
@@ -288,8 +247,6 @@ end
 ---Test helper: reset session without touching Font (specs).
 function ListFonts._resetSessionForTests()
     _session.applied = false
-    _session.saved_fontmap = nil
-    _session.latin_realname = nil
     _session.injected_fallback = nil
     _session.hint_shown = false
 end

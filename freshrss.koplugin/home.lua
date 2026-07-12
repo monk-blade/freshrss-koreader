@@ -9,7 +9,6 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local IconButton = require("ui/widget/iconbutton")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
-local Menu = require("ui/widget/menu")
 local Size = require("ui/size")
 local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
@@ -18,6 +17,7 @@ local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
 
 local plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)/[^/]+$")
+local ListMenu = dofile(plugin_dir .. "/list_menu.lua")
 local FavCategories = dofile(plugin_dir .. "/fav_categories.lua")
 local SettingsUI = dofile(plugin_dir .. "/settings_ui.lua")
 local Status = dofile(plugin_dir .. "/ui_status.lua")
@@ -275,7 +275,7 @@ function Home:buildLayout()
     if plugin.list_fonts then
         list_font_size = plugin.list_fonts.readFontSize()
     end
-    self.list = Menu:new{
+    self.list = ListMenu:new{
         title = "",
         no_title = true,
         is_popout = false,
@@ -289,6 +289,7 @@ function Home:buildLayout()
         items_font_size = list_font_size,
         items_mandatory_font_size = math.max(12, list_font_size - 4),
         item_table = plugin:buildItemTable(),
+        list_fonts = plugin.list_fonts,
         show_parent = self,
         close_callback = nil,
     }
@@ -371,36 +372,21 @@ function Home:onClose()
     if plugin then
         pcall(function() plugin:closeHomeOverlays() end)
         pcall(function() Status:close() end)
+        -- Restore Gujarati fallback injection before underlying UI repaints.
+        -- smallinfofont is never remapped globally (list_menu scopes Latin font).
+        if plugin.list_fonts then
+            pcall(function() plugin.list_fonts.restore() end)
+        end
     end
 
     UIManager:close(self, "flashui")
 
-    -- Clear plugin refs after UIManager finishes close/repaint (font restore runs
-    -- deferred in onCloseWidget, after the underlying UI refresh).
     if plugin then
         UIManager:nextTick(function()
             pcall(function() plugin:onHomeClosed() end)
         end)
     end
     return true
-end
-
-function Home:onCloseWidget()
-    -- Defer font restore until after UIManager removes us and the underlying
-    -- FileManager/CoverBrowser repaints. Evicting Font.faces during that repaint
-    -- left bookshelf TextWidgets with dangling face_obj handles (FreeType crash
-    -- in crash log: freetype.lua:108 → bookshelf_widget paintTo).
-    if self._restored_list_fonts then return end
-    self._restored_list_fonts = true
-    local plugin = self._close_plugin or self.plugin
-    UIManager:nextTick(function()
-        UIManager:nextTick(function()
-            -- Skip if home was reopened before deferred restore runs.
-            if plugin and plugin.list_fonts and not plugin.home then
-                pcall(function() plugin.list_fonts.restore() end)
-            end
-        end)
-    end)
 end
 
 return Home

@@ -106,17 +106,12 @@ describe("FreshRSS list_fonts helpers", function()
         assert.is_false(ListFonts.maybeShowMissingHint(function() end, {}))
     end)
 
-    it("restores fontmap and fallbacks without evicting cached faces", function()
+    it("injects and restores Gujarati fallback without touching smallinfofont", function()
         package.loaded["ui/font"] = nil
         local latin_path = os.tmpname()
         local guj_path = os.tmpname()
         local f1 = assert(io.open(latin_path, "wb")); f1:write("x"); f1:close()
         local f2 = assert(io.open(guj_path, "wb")); f2:write("x"); f2:close()
-        local faces = {
-            ["NotoSans-Regular.ttf22"] = { realname = "NotoSans-Regular.ttf", fallbacks = { true } },
-            [latin_path .. "22"] = { realname = latin_path, fallbacks = { true } },
-            [guj_path .. "22"] = { realname = guj_path, fallbacks = { true } },
-        }
         package.preload["ui/font"] = function()
             return {
                 fontmap = { smallinfofont = "NotoSans-Regular.ttf" },
@@ -124,22 +119,18 @@ describe("FreshRSS list_fonts helpers", function()
                     "NotoSans-Regular.ttf",
                     "NotoSansCJKsc-Regular.otf",
                 },
-                faces = faces,
+                faces = {},
             }
         end
         ListFonts.saveLatinFont(latin_path)
         ListFonts.saveGujaratiFont(guj_path)
         ListFonts.apply()
         local Font = require("ui/font")
-        assert.equals(latin_path, Font.fontmap.smallinfofont)
+        assert.equals("NotoSans-Regular.ttf", Font.fontmap.smallinfofont)
         assert.equals(guj_path, Font.fallbacks[2])
         ListFonts.restore()
         assert.equals("NotoSans-Regular.ttf", Font.fontmap.smallinfofont)
         assert.equals("NotoSansCJKsc-Regular.otf", Font.fallbacks[2])
-        -- Cached face entries must stay valid for widgets still holding face_obj refs.
-        assert.is_not_nil(Font.faces[latin_path .. "22"])
-        assert.is_not_nil(Font.faces[guj_path .. "22"])
-        assert.is_nil(Font.faces["NotoSans-Regular.ttf22"].fallbacks)
         package.preload["ui/font"] = nil
         package.loaded["ui/font"] = nil
         os.remove(latin_path)
