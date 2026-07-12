@@ -5,10 +5,19 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 ## Features
 
 - Offline-first: opens the local cache immediately (no hang on launch)
-- Background sync with a progress strip (login → feeds → articles → cache)
-- Auto-refresh on open (toggle in the FreshRSS menu; default on)
-- Unread / favorite state with offline retry queue
-- Native text article view (`TextViewer`) with multiline titles
+- Full-screen home with **Browse / Mark all / Settings** button bar
+- Browse modes: All / Unread / Starred / Feeds / Categories
+- Separate Settings menu (connection, auto-refresh, sync filter, articles per sync, queue)
+- Auto-refresh on open **off by default** (opt-in in Settings)
+- Background sync with a progress strip when you refresh
+- Unread-only sync by default (`xt=read`), with optional “all articles” mode
+- Configurable articles-per-sync cap (50 / 100 / 200 / 300) with continuation paging
+- Mark all as read for the current browse stream
+- HTML article viewer with **View settings** (☰: font size/face, line height, show images, open original link)
+- Local image download into the cache (MuPDF never fetches remote URLs); viewer opens first, then rebuilds when images arrive
+- Favorite / Mark unread with live button state and sync or “queued offline” notifications
+- Pending-action queue UI (list / flush / clear) with sync summary toast
+- Dispatcher actions: `freshrss_sync`, `freshrss_flush_queue`, `freshrss_open`
 - Lucide icons for refresh and chrome (ISC-licensed)
 
 ## Installation
@@ -23,16 +32,17 @@ https://reader.example/api/greader.php
 
 ## Usage
 
-1. **Tools → FreshRSS** — shows cached articles right away.
-2. If online and auto-refresh is enabled, a progress strip syncs in the background.
-3. Tap **Refresh** (or the title-bar refresh icon) for an explicit sync (may prompt for Wi‑Fi).
-4. Toggle **Auto-refresh on open** from the list menu.
+1. **Tools → FreshRSS** — full-screen list of cached articles (Unread by default). Only the home title-bar **X** (or Back on the list) exits the plugin; closing an article returns to the list.
+2. Tap **Browse** to switch All / Unread / Starred / Feeds / Categories.
+3. Tap the title-bar refresh icon to sync the current stream (may prompt for Wi‑Fi). Auto-refresh on open is **off** by default (enable under Settings).
+4. Use the **Browse / Mark all / Settings** buttons under the title bar.
+5. In an article: tap the **☰** menu for View settings (font, size, line height, images, original link); swipe/tap to page; use Prev/Next, Mark unread, or Favorite (button updates immediately; toast shows synced vs queued).
 
 ## Development and tests
 
 The plugin accepts `FRESHRSS_API_URL`, `FRESHRSS_USERNAME`, and `FRESHRSS_API_PASSWORD` environment variables. Environment values override local KOReader settings and are not written to the device settings file. Copy `.env.example` to `.env`, populate it locally, and export it before testing; `.env` is ignored by Git.
 
-For a local KOReader checkout, follow the official [Building.md](https://github.com/koreader/koreader/blob/master/doc/Building.md) workflow. The relevant commands are:
+For a local KOReader checkout, follow the official [Building.md](https://github.com/koreader/koreader/doc/Building.md) workflow. The relevant commands are:
 
 ```sh
 cd /path/to/koreader

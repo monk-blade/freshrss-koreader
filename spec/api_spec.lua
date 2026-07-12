@@ -67,4 +67,30 @@ describe("FreshRSS API", function()
         assert.equals("user/-/state/com.google/starred", captured.fields.r)
         assert.is_nil(captured.fields.a)
     end)
+
+    it("builds stream paths with unread exclude and continuation", function()
+        local api = API:new{ base_url = "https://reader.example/api/greader.php", username = "u", api_password = "p" }
+        local path = api:buildStreamPath(nil, { n = 50, exclude_read = true, continuation = "999" })
+        assert.truthy(path:find("stream/contents/user/%-/state/com%.google/reading%-list", 1, false))
+        assert.truthy(path:find("n=50", 1, true))
+        assert.truthy(path:find("r=n", 1, true))
+        assert.truthy(path:find("xt=", 1, true))
+        assert.truthy(path:find("c=999", 1, true))
+    end)
+
+    it("posts mark-all-as-read with stream and timestamp", function()
+        local api = API:new{ base_url = "https://reader.example/api/greader.php", username = "u", api_password = "p", auth = "u/abc", token = "tok" }
+        local captured
+        function api:requestRaw(path, method, fields)
+            captured = { path = path, method = method, fields = fields }
+            return "OK", 200
+        end
+        local ok, err = api:markAllAsRead("user/-/state/com.google/reading-list", 1700000000)
+        assert.is_true(ok, err)
+        assert.equals("reader/api/0/mark-all-as-read", captured.path)
+        assert.equals("POST", captured.method)
+        assert.equals("user/-/state/com.google/reading-list", captured.fields.s)
+        assert.equals("1700000000", captured.fields.ts)
+        assert.equals("tok", captured.fields.T)
+    end)
 end)

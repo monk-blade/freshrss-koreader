@@ -135,18 +135,58 @@ function API:unreadCount()
     return self:request("reader/api/0/unread-count?output=json")
 end
 
-function API:stream(stream_id, count)
-    return self:request("reader/api/0/stream/contents/" .. (stream_id or "user/-/state/com.google/reading-list") .. "?output=json&n=" .. tostring(count or 100) .. "&r=newest")
+-- opts: n, continuation (c), exclude_read (adds xt=read), stream_id via first arg
+function API:buildStreamPath(stream_id, opts)
+    opts = opts or {}
+    local sid = stream_id or "user/-/state/com.google/reading-list"
+    local parts = {
+        "output=json",
+        "n=" .. tostring(opts.n or 100),
+        "r=n", -- newest first (FreshRSS only special-cases r=o)
+    }
+    if opts.continuation and tostring(opts.continuation) ~= "" then
+        table.insert(parts, "c=" .. url.escape(tostring(opts.continuation)))
+    end
+    if opts.exclude_read then
+        table.insert(parts, "xt=" .. url.escape("user/-/state/com.google/read"))
+    end
+    return "reader/api/0/stream/contents/" .. sid .. "?" .. table.concat(parts, "&")
+end
+
+function API:stream(stream_id, opts)
+    if type(opts) == "number" then
+        -- Back-compat: stream(id, count)
+        opts = { n = opts }
+    end
+    return self:request(self:buildStreamPath(stream_id, opts))
+end
+
+function API:ensureToken()
+    if self.token and self.token ~= "" then return true end
+    local token = self:requestRaw("reader/api/0/token")
+    self.token = token and token:gsub("%s+$", "") or nil
+    return self.token and self.token ~= ""
 end
 
 function API:editTag(item_id, action, state)
-    if not self.token then
-        local token = self:requestRaw("reader/api/0/token")
-        self.token = token and token:gsub("%s+$", "")
-    end
+    self:ensureToken()
     local tag = "user/-/state/com.google/" .. action
     local field = state and "a" or "r"
     local text, code = self:requestRaw("reader/api/0/edit-tag", "POST", { i = item_id, [field] = tag, T = self.token or "" })
+    if not text or code >= 400 then return false, "HTTP request failed (" .. tostring(code) .. ")" end
+    return true
+end
+
+-- Mark all items in a stream as read. ts is Unix seconds (FreshRSS accepts seconds or ns).
+function API:markAllAsRead(stream_id, ts)
+    self:ensureToken()
+    local sid = stream_id or "user/-/state/com.google/reading-list"
+    local fields = {
+        s = sid,
+        ts = tostring(ts or os.time()),
+        T = self.token or "",
+    }
+    local text, code = self:requestRaw("reader/api/0/mark-all-as-read", "POST", fields)
     if not text or code >= 400 then return false, "HTTP request failed (" .. tostring(code) .. ")" end
     return true
 end
