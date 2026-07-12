@@ -112,4 +112,32 @@ describe("FreshRSS state synchronization", function()
         assert.equals("Hello", article.title)
         assert.equals("Feed", article.feed_title)
     end)
+
+    it("reports sync progress stages in order", function()
+        local stages = {}
+        local cache = {
+            getArticle = function() return nil end,
+            putArticle = function() end,
+            queuedActions = function() return {} end,
+        }
+        local settings = { saveSetting = function() end, flush = function() end }
+        local sync = Sync:new(cache, settings)
+        local api = {
+            login = function() return true end,
+            listSubscriptions = function() return {} end,
+            listTags = function() return {} end,
+            unreadCount = function() return {} end,
+            stream = function() return { items = {} } end,
+        }
+        local ok = sync:refresh(api, nil, function(stage, ratio)
+            table.insert(stages, { stage = stage, ratio = ratio })
+        end)
+        assert.is_true(ok)
+        assert.equals("login", stages[1].stage)
+        assert.equals("meta", stages[2].stage)
+        assert.equals("stream", stages[3].stage)
+        assert.equals("cache", stages[4].stage)
+        assert.equals("done", stages[#stages].stage)
+        assert.equals(1.0, stages[#stages].ratio)
+    end)
 end)

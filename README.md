@@ -4,13 +4,12 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 
 ## Features
 
-- Feed/article browsing with unread and favorite state
-- Native text-first article view
-- Custom KOReader-native article layout using the device's configured `ffont`, `tfont`, and `smallinfofont` faces
-- Persistent local article cache
-- Offline retry queue for read and favorite actions
-- Parallel async sync for subscriptions, tags, unread counts, and article streams
-- Optional image support planned behind a settings toggle
+- Offline-first: opens the local cache immediately (no hang on launch)
+- Background sync with a progress strip (login → feeds → articles → cache)
+- Auto-refresh on open (toggle in the FreshRSS menu; default on)
+- Unread / favorite state with offline retry queue
+- Native text article view (`TextViewer`) with multiline titles
+- Lucide icons for refresh and chrome (ISC-licensed)
 
 ## Installation
 
@@ -21,6 +20,13 @@ In FreshRSS, enable API access and create an API password under the user profile
 ```text
 https://reader.example/api/greader.php
 ```
+
+## Usage
+
+1. **Tools → FreshRSS** — shows cached articles right away.
+2. If online and auto-refresh is enabled, a progress strip syncs in the background.
+3. Tap **Refresh** (or the title-bar refresh icon) for an explicit sync (may prompt for Wi‑Fi).
+4. Toggle **Auto-refresh on open** from the list menu.
 
 ## Development and tests
 

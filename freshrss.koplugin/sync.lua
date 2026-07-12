@@ -31,18 +31,29 @@ local function articleFromRaw(raw, old)
     }
 end
 
+local function report(on_progress, stage, ratio)
+    if on_progress then on_progress(stage, ratio) end
+end
+
 function Sync:new(cache, settings)
     return setmetatable({ cache = cache, settings = settings }, self)
 end
 
-function Sync:refresh(api, stream_id)
+function Sync:refresh(api, stream_id, on_progress)
+    report(on_progress, "login", 0.10)
     local ok, err = api:login()
     if not ok then return false, err end
+
+    report(on_progress, "meta", 0.40)
     local subscriptions = api:listSubscriptions()
     local tags = api:listTags()
     local counts = api:unreadCount()
+
+    report(on_progress, "stream", 0.70)
     local stream = api:stream(stream_id)
     if not stream or not stream.items then return false, "FreshRSS returned no article stream" end
+
+    report(on_progress, "cache", 0.90)
     for _, raw in ipairs(stream.items) do
         local id = tostring(raw.id or raw.crawlTimeMsec or "")
         if id ~= "" then
@@ -50,14 +61,19 @@ function Sync:refresh(api, stream_id)
             self.cache:putArticle(articleFromRaw(raw, old))
         end
     end
-    self.settings:saveSetting("last_sync", os.time()); self.settings:flush()
+    self.settings:saveSetting("freshrss_last_sync", os.time())
+    self.settings:saveSetting("last_sync", os.time())
+    self.settings:flush()
     self:flushQueue(api)
+    report(on_progress, "done", 1.0)
     return true, { subscriptions = subscriptions, tags = tags, counts = counts }
 end
 
-function Sync:refreshAsync(api, stream_id, callback)
+function Sync:refreshAsync(api, stream_id, callback, on_progress)
+    report(on_progress, "login", 0.10)
     api:loginAsync(function(logged_in, login_error)
         if not logged_in then callback(false, login_error); return end
+        report(on_progress, "meta", 0.40)
         local pending = 4
         local result = {}
         local failed
@@ -70,6 +86,7 @@ function Sync:refreshAsync(api, stream_id, callback)
                 callback(false, failed or "FreshRSS returned no article stream")
                 return
             end
+            report(on_progress, "cache", 0.90)
             for _, raw in ipairs(result.stream.items) do
                 local id = tostring(raw.id or raw.crawlTimeMsec or "")
                 if id ~= "" then
@@ -77,13 +94,19 @@ function Sync:refreshAsync(api, stream_id, callback)
                     self.cache:putArticle(articleFromRaw(raw, old))
                 end
             end
-            self.settings:saveSetting("last_sync", os.time()); self.settings:flush()
+            self.settings:saveSetting("freshrss_last_sync", os.time())
+            self.settings:saveSetting("last_sync", os.time())
+            self.settings:flush()
             self:flushQueue(api)
+            report(on_progress, "done", 1.0)
             callback(true, result)
         end
         api:requestAsync("reader/api/0/subscription/list?output=json", nil, nil, function(v, e) finished("subscriptions", v, e) end)
         api:requestAsync("reader/api/0/tag/list?output=json", nil, nil, function(v, e) finished("tags", v, e) end)
-        api:requestAsync("reader/api/0/unread-count?output=json", nil, nil, function(v, e) finished("counts", v, e) end)
+        api:requestAsync("reader/api/0/unread-count?output=json", nil, nil, function(v, e)
+            report(on_progress, "stream", 0.70)
+            finished("counts", v, e)
+        end)
         api:requestAsync("reader/api/0/stream/contents/" .. (stream_id or "user/-/state/com.google/reading-list") .. "?output=json&n=100&r=newest", nil, nil, function(v, e) finished("stream", v, e) end)
     end)
 end
@@ -114,7 +137,7 @@ end
 function Sync:flushQueue(api)
     while #self.cache:queuedActions() > 0 do
         local action = self.cache:dequeue()
-        local ok, error_message = api:editTag(action.id, action.action, action.state)
+        local ok = api:editTag(action.id, action.action, action.state)
         if not ok then
             api:invalidateSession()
             if not api:login() then

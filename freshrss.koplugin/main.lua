@@ -3,6 +3,8 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local Menu = require("ui/widget/menu")
+local Notification = require("ui/widget/notification")
+local NetworkMgr = require("ui/network/manager")
 local DataStorage = require("datastorage")
 local util = require("util")
 
@@ -11,10 +13,20 @@ local API = dofile(plugin_dir .. "/api.lua")
 local Cache = dofile(plugin_dir .. "/cache.lua")
 local Sync = dofile(plugin_dir .. "/sync.lua")
 local Renderer = dofile(plugin_dir .. "/renderer.lua")
+local Icons = dofile(plugin_dir .. "/icons.lua")
+local Status = dofile(plugin_dir .. "/ui_status.lua")
 
 local Plugin = WidgetContainer:extend{
     name = "freshrss",
     is_doc_only = false,
+}
+
+local STAGE_LABELS = {
+    login = "Signing in…",
+    meta = "Loading feeds…",
+    stream = "Fetching articles…",
+    cache = "Updating cache…",
+    done = "Done",
 }
 
 local function trim(value)
@@ -33,8 +45,13 @@ function Plugin:init()
     self.settings = G_reader_settings
     self.cache = Cache:new(DataStorage:getDataDir() .. "/freshrss")
     self.sync = Sync:new(self.cache, self.settings)
+    self.icons = Icons:new(plugin_dir)
+    self.icons:install()
+    Status:setIcons(self.icons)
     self.api_client = nil
     self.menu = nil
+    self.feed_id = nil
+    self.syncing = false
     self:registerMenuEntries()
 end
 
@@ -58,12 +75,24 @@ function Plugin:config()
     }
 end
 
+function Plugin:autoRefreshEnabled()
+    return self.settings:readSetting("freshrss_auto_refresh") ~= false
+end
+
 function Plugin:openHome()
     if trim(self:config().base_url) == "" then
         self:showSetup()
         return
     end
-    self:refreshAndShow(nil, true)
+    -- Offline-first: paint cache immediately, never block on network.
+    self:showCached(nil)
+    if self:autoRefreshEnabled() then
+        UIManager:nextTick(function()
+            if NetworkMgr:isOnline() then
+                self:startSync(nil, false)
+            end
+        end)
+    end
 end
 
 function Plugin:showSetup()
@@ -130,37 +159,63 @@ function Plugin:api()
     return self.api_client
 end
 
-function Plugin:refreshAndShow(feed_id, show_loading)
-    local loading
-    if show_loading then
-        loading = InfoMessage:new{ text = "Syncing FreshRSS…" }
-        UIManager:show(loading)
-    end
-    local function done(ok, result)
-        if loading then UIManager:close(loading) end
-        if not ok then
-            UIManager:show(InfoMessage:new{ text = "FreshRSS unavailable:\n" .. tostring(result) })
-            self:showCached(feed_id)
-            return
-        end
-        self:showCached(feed_id)
-    end
-    local api = self:api()
-    -- HTTPClient only works when the Turbo looper is active (DUSE_TURBO_LIB).
-    -- initLooper always exists as a method; check the looper instance itself.
-    UIManager:initLooper()
-    if UIManager.looper then
-        self.sync:refreshAsync(api, feed_id, done)
-    else
-        done(self.sync:refresh(api, feed_id))
+function Plugin:progressHandler()
+    return function(stage, ratio)
+        local label = STAGE_LABELS[stage] or "Syncing FreshRSS…"
+        Status:update(label, ratio)
     end
 end
 
-function Plugin:showCached(feed_id)
+function Plugin:startSync(feed_id, interactive)
+    if self.syncing then return end
+    self.syncing = true
+    self.feed_id = feed_id
+    Status:show(STAGE_LABELS.login, 0.05)
+
+    local function done(ok, result)
+        self.syncing = false
+        Status:close()
+        if not ok then
+            if interactive then
+                UIManager:show(InfoMessage:new{ text = "FreshRSS unavailable:\n" .. tostring(result) })
+            else
+                Notification:notify("FreshRSS sync failed", Notification.SOURCE_ALWAYS_SHOW)
+            end
+            return
+        end
+        local unread = self.cache:unreadCount()
+        Notification:notify("Updated · " .. tostring(unread) .. " unread", Notification.SOURCE_ALWAYS_SHOW)
+        if self.menu then
+            self:showCached(feed_id)
+        end
+    end
+
+    local api = self:api()
+    local on_progress = self:progressHandler()
+    UIManager:initLooper()
+    if UIManager.looper then
+        self.sync:refreshAsync(api, feed_id, done, on_progress)
+    else
+        -- Yield to the UI once so the status strip can paint before blocking I/O.
+        UIManager:nextTick(function()
+            done(self.sync:refresh(api, feed_id, on_progress))
+        end)
+    end
+end
+
+function Plugin:requestSync(feed_id)
+    NetworkMgr:runWhenOnline(function()
+        self:startSync(feed_id, true)
+    end)
+end
+
+function Plugin:buildItemTable(feed_id)
     local items = self.cache:listArticles(feed_id)
     local entries = {}
+    local unread_mark = "● "
+    local read_mark = "○ "
     for _, article in ipairs(items) do
-        local marker = article.unread and "● " or "○ "
+        local marker = article.unread and unread_mark or read_mark
         local star = article.starred and " ★" or ""
         table.insert(entries, {
             text = marker .. articleTitle(article) .. star,
@@ -169,23 +224,65 @@ function Plugin:showCached(feed_id)
         })
     end
     if #entries == 0 then
-        table.insert(entries, { text = "No cached articles. Tap Refresh to sync.", select_enabled = false })
+        local offline = not NetworkMgr:isOnline()
+        local empty_text = offline
+            and "No cached articles · offline. Connect and tap Refresh."
+            or "No cached articles. Tap Refresh to sync."
+        table.insert(entries, { text = empty_text, select_enabled = false })
     end
     table.insert(entries, 1, {
-        text = "Refresh",
-        callback = function() UIManager:close(self.menu); self:refreshAndShow(feed_id, true) end,
+        text = "↻  Refresh",
+        callback = function() self:requestSync(feed_id) end,
     })
     table.insert(entries, 2, {
-        text = "Settings",
-        callback = function() UIManager:close(self.menu); self:showSetup() end,
+        text = "⚙  Settings",
+        callback = function() self:showSetup() end,
     })
+    local auto = self:autoRefreshEnabled()
+    table.insert(entries, 3, {
+        text = auto and "Auto-refresh on open: on" or "Auto-refresh on open: off",
+        callback = function()
+            self.settings:saveSetting("freshrss_auto_refresh", not auto)
+            self.settings:flush()
+            self:showCached(feed_id)
+        end,
+    })
+    return entries
+end
+
+function Plugin:menuTitle()
+    return "FreshRSS  ·  " .. tostring(self.cache:unreadCount())
+end
+
+function Plugin:menuSubtitle()
+    local last = self.settings:readSetting("freshrss_last_sync") or self.settings:readSetting("last_sync")
+    if not last then return "Not synced yet" end
+    return "Last sync · " .. os.date("%Y-%m-%d %H:%M", tonumber(last) or os.time())
+end
+
+function Plugin:showCached(feed_id)
+    self.feed_id = feed_id
+    local entries = self:buildItemTable(feed_id)
+    local title = self:menuTitle()
+    local subtitle = self:menuSubtitle()
+    if self.menu then
+        self.menu:switchItemTable(title, entries, nil, nil, subtitle)
+        return
+    end
     self.menu = Menu:new{
-        title = "FreshRSS  ·  " .. tostring(self.cache:unreadCount()),
+        title = title,
+        subtitle = subtitle,
         title_multilines = true,
         multilines_show_more_text = true,
         item_table = entries,
-        -- Keep Menu's default onMenuChoice so item.callback() runs on select.
-        close_callback = function() self.menu = nil end,
+        title_bar_left_icon = self.icons:name("refresh"),
+        onLeftButtonTap = function()
+            self:requestSync(self.feed_id)
+        end,
+        close_callback = function()
+            Status:close()
+            self.menu = nil
+        end,
     }
     UIManager:show(self.menu)
 end
@@ -193,8 +290,6 @@ end
 function Plugin:openArticle(id)
     local article = self.cache:getArticle(id)
     if not article then return end
-    -- Update local state and paint the viewer first; sync read-state after paint
-    -- so a slow FreshRSS round-trip cannot hang the UI before the article shows.
     article.unread = false
     self.cache:putArticle(article)
     local widget = Renderer:articleWidget(article, {
