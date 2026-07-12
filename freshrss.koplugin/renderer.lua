@@ -8,6 +8,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Menu = require("ui/widget/menu")
+local ReaderDictionary = require("apps/reader/modules/readerdictionary")
 local ScrollHtmlWidget = require("ui/widget/scrollhtmlwidget")
 local Size = require("ui/size")
 local SpinWidget = require("ui/widget/spinwidget")
@@ -16,6 +17,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local util = require("util")
+local time = require("ui/time")
 local Input = Device.input
 local Screen = Device.screen
 
@@ -468,6 +470,14 @@ function ArticleViewer:init()
     self.image_map = self.callbacks.image_map
     self.html_resource_directory = self.callbacks.html_resource_directory
     self.data_dir = self.callbacks.data_dir
+
+    -- Stub enough of ReaderUI for ReaderDictionary (FileManager pattern).
+    self.menu = { registerToMainMenu = function() end }
+    self.doc_props = {
+        display_title = util.htmlEntitiesToUtf8(tostring((self.article or {}).title or "FreshRSS")),
+    }
+    self.dictionary = ReaderDictionary:new{ ui = self }
+
     self:build()
 
     if Device:hasKeys() then
@@ -477,10 +487,17 @@ function ArticleViewer:init()
             ScrollUp = { { Input.group.PgBack } },
             ShowMenu = { { "Menu" } },
         }
+        if Device:hasKeyboard() then
+            self.key_events.ShowDictionaryLookup = { { "Alt", "D" }, { "Ctrl", "D" } }
+        end
     end
 
     if Device:isTouchDevice() then
         local range = Geom:new{ x = 0, y = 0, w = screen_w, h = screen_h }
+        local hold_pan_rate = G_reader_settings:readSetting("hold_pan_rate")
+        if not hold_pan_rate then
+            hold_pan_rate = Screen.low_pan_rate and 5.0 or 30.0
+        end
         self.ges_events = {
             TapNav = {
                 GestureRange:new{ ges = "tap", range = range },
@@ -493,6 +510,23 @@ function ArticleViewer:init()
             },
             PanReleaseScroll = {
                 GestureRange:new{ ges = "pan_release", range = range },
+            },
+            -- Hold-to-select → KOReader dictionary (same pattern as FootnoteWidget).
+            HoldStartText = {
+                GestureRange:new{ ges = "hold", range = range },
+            },
+            HoldPanText = {
+                GestureRange:new{
+                    ges = "hold_pan",
+                    range = range,
+                    rate = hold_pan_rate,
+                },
+            },
+            HoldReleaseText = {
+                GestureRange:new{ ges = "hold_release", range = range },
+                args = function(text, hold_duration)
+                    self:onDictionarySelection(text, hold_duration)
+                end,
             },
         }
     end
@@ -612,6 +646,8 @@ function ArticleViewer:_buildTitleBar()
         subtitle = subtitle .. string.format("  ·  %d/%d", index, total)
     end
 
+    self.doc_props = { display_title = title }
+
     local width = self.dimen.w
     self.title_bar = TitleBar:new{
         width = width,
@@ -718,6 +754,7 @@ function ArticleViewer:_buildHtmlWidget()
         width = width,
         height = height,
         dialog = self,
+        highlight_text_selection = true,
         html_link_tapped_callback = function(link)
             local href = link and (link.uri or link.externalurl or link.url or link.href)
             if href and self.callbacks.on_link then
@@ -744,6 +781,7 @@ function ArticleViewer:_buildHtmlWidget()
             width = width,
             height = height,
             dialog = self,
+            highlight_text_selection = true,
         }
     end
 end
@@ -832,6 +870,14 @@ function ArticleViewer:onShowViewSettings()
         self:onShowViewSettings()
     end
     local rows = {
+        {
+            icon = iname("book"),
+            text = "Dictionary lookup",
+            callback = function()
+                UIManager:close(panel)
+                self:onShowDictionaryLookup()
+            end,
+        },
         {
             icon = iname("a_large_small"),
             text = string.format("Font size: %d", self.font_size),
@@ -1107,6 +1153,48 @@ function ArticleViewer:onPanReleaseScroll(_, ges)
             return self:scroll(-1)
         end
         return true
+    end
+end
+
+function ArticleViewer:onDictionarySelection(text, hold_duration)
+    text = tostring(text or "")
+    if text == "" then return end
+    local dict_close_callback = function()
+        local box = self.html_widget and self.html_widget.htmlbox_widget
+        if box and box.scheduleClearHighlightAndRedraw then
+            box:scheduleClearHighlightAndRedraw()
+        end
+    end
+    if not self.dictionary then
+        dict_close_callback()
+        return
+    end
+    -- Long hold (≥3s) tries Wikipedia when available; otherwise dictionary.
+    if hold_duration and hold_duration >= time.s(3) then
+        local ok, ReaderWikipedia = pcall(require, "apps/reader/modules/readerwikipedia")
+        if ok and ReaderWikipedia then
+            if not self.wikipedia then
+                self.wikipedia = ReaderWikipedia:new{ ui = self }
+            end
+            if self.wikipedia.onLookupWikipedia then
+                self.wikipedia:onLookupWikipedia(text, false, nil, nil, nil, dict_close_callback)
+                return
+            end
+        end
+    end
+    self.dictionary:onLookupWord(text, false, nil, nil, nil, dict_close_callback)
+end
+
+function ArticleViewer:onShowDictionaryLookup()
+    if self.dictionary and self.dictionary.onShowDictionaryLookup then
+        self.dictionary:onShowDictionaryLookup()
+    end
+    return true
+end
+
+function ArticleViewer:onLookupWord(word, is_sane, boxes, highlight, link, dict_close_callback)
+    if self.dictionary then
+        return self.dictionary:onLookupWord(word, is_sane, boxes, highlight, link, dict_close_callback)
     end
 end
 

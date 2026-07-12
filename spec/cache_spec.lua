@@ -91,12 +91,39 @@ describe("FreshRSS cache", function()
                 unreadcounts = {
                     { id = "feed/http://news", count = 12 },
                     { id = "feed/http://empty", count = 0 },
+                    { id = "user/-/label/News", count = 4 },
                 },
             },
         })
         assert.equals(12, cache:unreadCountForStream("feed/http://news"))
         assert.equals(0, cache:unreadCountForStream("feed/http://empty"))
         assert.is_nil(cache:unreadCountForStream("feed/missing"))
+        assert.equals(4, cache:unreadCountForBrowse({ mode = "label", label = "user/-/label/News" }))
+        assert.equals(12, cache:unreadCountForBrowse({ mode = "feed", feed_id = "feed/http://news" }))
+    end)
+
+    it("falls back to local unread for browse when stream meta is missing", function()
+        cache:putArticle({
+            id = "1", title = "A", unread = true, feed_id = "feed/1",
+            labels = { "user/-/label/Ed" }, updated = 3,
+        })
+        cache:putArticle({
+            id = "2", title = "B", unread = true, feed_id = "feed/2",
+            labels = { "user/-/label/Ed" }, updated = 2,
+        })
+        cache:putArticle({
+            id = "3", title = "C", unread = false, feed_id = "feed/1",
+            labels = { "user/-/label/Ed" }, updated = 1,
+        })
+        cache:putArticle({
+            id = "4", title = "D", unread = true, feed_id = "feed/9",
+            labels = {}, updated = 4, starred = true,
+        })
+        assert.equals(3, cache:unreadCount())
+        assert.equals(2, cache:unreadCountForBrowse({ mode = "label", label = "user/-/label/Ed" }))
+        assert.equals(1, cache:unreadCountForBrowse({ mode = "feed", feed_id = "feed/1" }))
+        assert.equals(1, cache:unreadCountForBrowse({ mode = "starred" }))
+        assert.equals(3, cache:unreadCountForBrowse({ mode = "unread" }))
     end)
 
     it("evicts oldest non-starred articles and keeps starred", function()

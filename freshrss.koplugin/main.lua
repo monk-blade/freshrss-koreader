@@ -1367,15 +1367,24 @@ function Plugin:confirmMarkAllRead()
 end
 
 function Plugin:menuTitle()
-    -- Single line: mode · unread · last sync (subtitle unused).
+    -- Single line: mode · unread (for this view) · last sync (subtitle unused).
     local browse = self:browseState()
     local mode = MODE_LABELS[browse.mode] or "FreshRSS"
     if browse.mode == "feed" and browse.feed_id then
         mode = "Feed"
+        local meta = self.cache:getMeta()
+        local subs = meta.subscriptions and meta.subscriptions.subscriptions or {}
+        for _, sub in ipairs(subs) do
+            local sid = sub.id or sub.feedId
+            if sid == browse.feed_id then
+                mode = sub.title or sid or "Feed"
+                break
+            end
+        end
     elseif browse.mode == "label" and browse.label then
         mode = labelDisplayName(browse.label)
     end
-    local count = tostring(self.cache:unreadCount())
+    local count = tostring(self.cache:unreadCountForBrowse(browse))
     local sync = self:menuSubtitle()
     if sync and sync ~= "" then
         return mode .. "  ·  " .. count .. "  ·  " .. sync

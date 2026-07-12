@@ -281,6 +281,39 @@ function Cache:unreadCount()
     return count
 end
 
+---Unread count for the current browse context (feed / label / starred / global).
+---Prefers FreshRSS unread-count meta for feed/label streams; falls back to local index.
+function Cache:unreadCountForBrowse(browse)
+    browse = browse or {}
+    local mode = browse.mode or "unread"
+    if mode == "feed" and browse.feed_id and browse.feed_id ~= "" then
+        local from_meta = self:unreadCountForStream(browse.feed_id)
+        if from_meta ~= nil then return from_meta end
+        local n = 0
+        for _, item in ipairs(self:listByMode("feed", { feed_id = browse.feed_id, apply_hidden = false })) do
+            if item.unread then n = n + 1 end
+        end
+        return n
+    end
+    if mode == "label" and browse.label and browse.label ~= "" then
+        local from_meta = self:unreadCountForStream(browse.label)
+        if from_meta ~= nil then return from_meta end
+        local n = 0
+        for _, item in ipairs(self:listByMode("label", { label = browse.label, apply_hidden = false })) do
+            if item.unread then n = n + 1 end
+        end
+        return n
+    end
+    if mode == "starred" then
+        local n = 0
+        for _, item in ipairs(self:listByMode("starred", { apply_hidden = false })) do
+            if item.unread then n = n + 1 end
+        end
+        return n
+    end
+    return self:unreadCount()
+end
+
 ---Unread count for one stream id from last sync's unread-count meta (or nil).
 function Cache:unreadCountForStream(stream_id)
     if stream_id == nil or stream_id == "" then return nil end

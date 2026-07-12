@@ -16,6 +16,7 @@ package.preload["device"] = function()
             scaleBySize = function(_, n) return n end,
         },
         hasKeys = function() return false end,
+        hasKeyboard = function() return false end,
         isTouchDevice = function() return false end,
         input = { group = { Back = "Back" } },
     }
@@ -67,7 +68,20 @@ package.preload["ui/widget/container/inputcontainer"] = function()
 end
 package.preload["ui/widget/container/movablecontainer"] = function() return {} end
 package.preload["ui/widget/scrollhtmlwidget"] = function() return {} end
-package.preload["ui/size"] = function() return { padding = { large = 10 } } end
+package.preload["ui/time"] = function()
+    return {
+        s = function(n) return n end,
+        now = function() return 0 end,
+    }
+end
+package.preload["apps/reader/modules/readerdictionary"] = function()
+    return {
+        new = function(_, opts)
+            return opts or {}
+        end,
+    }
+end
+package.preload["ui/size"] = function() return { padding = { large = 10, tiny = 1, small = 2 } } end
 package.preload["ui/font"] = function()
     return {
         getFace = function(_, name, size)

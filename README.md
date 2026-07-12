@@ -23,6 +23,7 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 - Tunable image sync: images per article, sync budget, parallelism, max bytes, timeout profile
 - Mark all as read for the current browse stream
 - HTML article viewer with **icon View settings** (☰) and icon bar: Prev / Unread / Favorite / **Open original** / Next; session scroll position remembered when leaving an article; default top/bottom body pad **0**
+- **Dictionary lookup**: hold a word in an article to search KOReader’s installed dictionaries (View settings → Dictionary lookup; Alt/Ctrl+D); long-hold (≥3s) tries Wikipedia when available
 - Same viewer body/title font size, line height, and spacing also under Settings → Appearance
 - Local image download into the cache (MuPDF never fetches remote URLs); orphan images purged when cache is cleaned
 - Favorite / Mark unread with live button state; favorited articles are **pinned on disk** under `favorites/`
@@ -48,7 +49,7 @@ For clearer mixed-script article lists, install **Roboto Condensed** and **Noto 
 2. Tap the **FreshRSS mark** (left of the title) to sync the current view (or reading list if that scope is set). Use the **filter / check / gear** chips on the row under the title for Browse / Mark all / Settings.
 3. Auto-refresh on open is **off** by default (enable under Settings → Connection). Use **Mark read on open** to control whether opening marks articles read.
 4. Favorite category chips share that second row (after a separator). Browse mode stays in the title. Long-press a feed in Feeds to hide/unhide it from All/Unread.
-5. In an article: tap the **☰** menu for View settings; use the icon bar for Prev / Mark unread / Favorite / Open original / Next.
+5. In an article: **hold a word** for dictionary lookup; tap the **☰** menu for View settings (includes Dictionary lookup); use the icon bar for Prev / Mark unread / Favorite / Open original / Next.
 
 ## Development and tests
 
