@@ -858,10 +858,13 @@ function Plugin:showCategoryIconPicker(label_id)
         UIManager:close(self.cat_icon_panel)
         self.cat_icon_panel = nil
     end
-    self.cat_icon_panel = SettingsUI.showPanel({
+    self.cat_icon_panel = SettingsUI.showPaginatedPanel({
         title = "Icon · " .. name,
         icons = self.icons,
         rows = rows,
+        set_panel = function(panel)
+            self.cat_icon_panel = panel
+        end,
         on_close = function()
             self.cat_icon_panel = nil
         end,
@@ -1416,23 +1419,25 @@ end
 
 function Plugin:refreshHomeAfterViewer()
     if not self.home or self.viewer then return end
-    pcall(function()
-        if self.list_fonts then
-            self.list_fonts.apply()
-        end
-        if self.home.title_bar then
-            self.home.title_bar:setTitle(self:menuTitle())
-            if self.home.title_bar.setSubTitle then
-                self.home.title_bar:setSubTitle("")
+    -- Second nextTick: onClose already defers on_back once; wait for viewer
+    -- teardown + home repaint before Menu/font refresh (Kindle FreeType races).
+    UIManager:nextTick(function()
+        if not self.home or self.viewer then return end
+        pcall(function()
+            if self.home.title_bar then
+                self.home.title_bar:setTitle(self:menuTitle())
+                if self.home.title_bar.setSubTitle then
+                    self.home.title_bar:setSubTitle("")
+                end
             end
-        end
-        self.home:updateList()
-        UIManager:setDirty(self.home, "ui")
+            self.home:updateList()
+            UIManager:setDirty(self.home, "ui")
+        end)
     end)
 end
 
 function Plugin:loadViewerImages(article, viewer)
-    if not viewer or viewer ~= self.viewer or not viewer.show_images then return end
+    if not viewer or viewer ~= self.viewer or viewer._closing or not viewer.show_images then return end
     local raw = tostring(article and article.html or "")
     local urls = Images.extractImageUrls(raw)
     if #urls == 0 then return end
@@ -1566,9 +1571,11 @@ function Plugin:openArticle(id, nav_ids)
         data_dir = data_dir,
         image_map = image_map,
         html_resource_directory = resource_dir,
-        on_back = function()
-            -- Viewer X / Back: only clear viewer and refresh list — never rebuild/close Home.
+        on_detach = function()
             self.viewer = nil
+        end,
+        on_back = function()
+            -- Viewer X / Back: refresh list only — never rebuild/close Home.
             self:refreshHomeAfterViewer()
         end,
         on_prev = function()

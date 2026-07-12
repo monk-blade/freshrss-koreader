@@ -848,6 +848,7 @@ function ArticleViewer:_buildHtmlWidget()
 end
 
 function ArticleViewer:reinit()
+    if self._closing or self._html_released then return end
     self:_buildHtmlWidget()
     self.frame[1] = VerticalGroup:new{
         align = "left",
@@ -859,6 +860,7 @@ function ArticleViewer:reinit()
 end
 
 function ArticleViewer:applyImageMap(image_map, resource_dir)
+    if self._closing or self._html_released then return end
     self.image_map = image_map
     self.html_resource_directory = resource_dir
     self:reinit()
@@ -1314,8 +1316,15 @@ function ArticleViewer:onClose()
 
     self:_closeOverlays()
 
+    local on_detach = self.callbacks and self.callbacks.on_detach
     local on_back = self.callbacks and self.callbacks.on_back
     self.callbacks = nil
+
+    -- Drop plugin viewer ref before UIManager:close so deferred image loads
+    -- cannot reinit MuPDF on a widget that is tearing down.
+    if on_detach then
+        pcall(on_detach)
+    end
 
     UIManager:close(self, "flashui")
     self:_releaseHtmlWidget()

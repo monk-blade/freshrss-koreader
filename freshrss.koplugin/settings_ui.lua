@@ -21,6 +21,8 @@ local Screen = Device.screen
 
 local SettingsUI = {}
 
+SettingsUI.ICON_PAGE_SIZE = 8
+
 local function iconSize()
     return Screen:scaleBySize(22)
 end
@@ -214,6 +216,143 @@ function SettingsUI.showPanel(opts)
     local panel = SettingsPanel:new(opts)
     UIManager:show(panel, "ui")
     return panel
+end
+
+---Slice rows for a 1-based page (testable helper).
+function SettingsUI.sliceRows(rows, page, page_size)
+    rows = rows or {}
+    page = tonumber(page) or 1
+    page_size = tonumber(page_size) or SettingsUI.ICON_PAGE_SIZE
+    if page < 1 then page = 1 end
+    if page_size < 1 then page_size = 1 end
+    local page_count = math.max(1, math.ceil(#rows / page_size))
+    if page > page_count then page = page_count end
+    local start_i = (page - 1) * page_size + 1
+    local end_i = math.min(#rows, start_i + page_size - 1)
+    local slice = {}
+    for i = start_i, end_i do
+        table.insert(slice, rows[i])
+    end
+    return slice, page, page_count
+end
+
+local function pagerBar(opts)
+    opts = opts or {}
+    local width = opts.width or Screen:getWidth()
+    local page = tonumber(opts.page) or 1
+    local page_count = tonumber(opts.page_count) or 1
+    local icons = opts.icons
+    local IconButton = require("ui/widget/iconbutton")
+    local prev_btn = IconButton:new{
+        icon = icons and icons:name("chevron_left") or "chevron.left",
+        width = Screen:scaleBySize(26),
+        height = Screen:scaleBySize(26),
+        padding = Size.padding.tiny,
+        enabled = page > 1,
+        callback = opts.on_prev,
+        allow_flash = true,
+        show_parent = opts.show_parent,
+    }
+    local next_btn = IconButton:new{
+        icon = icons and icons:name("chevron_right") or "chevron.right",
+        width = Screen:scaleBySize(26),
+        height = Screen:scaleBySize(26),
+        padding = Size.padding.tiny,
+        enabled = page < page_count,
+        callback = opts.on_next,
+        allow_flash = true,
+        show_parent = opts.show_parent,
+    }
+    local label = TextWidget:new{
+        text = string.format("%d / %d", page, page_count),
+        face = Font:getFace("smallinfofont"),
+    }
+    local row = HorizontalGroup:new{
+        CenterContainer:new{
+            dimen = Geom:new{ w = math.floor(width / 3), h = Screen:scaleBySize(30) },
+            prev_btn,
+        },
+        CenterContainer:new{
+            dimen = Geom:new{ w = math.floor(width / 3), h = Screen:scaleBySize(30) },
+            label,
+        },
+        CenterContainer:new{
+            dimen = Geom:new{ w = math.floor(width / 3), h = Screen:scaleBySize(30) },
+            next_btn,
+        },
+    }
+    return FrameContainer:new{
+        bordersize = 0,
+        padding = Size.padding.large,
+        margin = 0,
+        background = Blitbuffer.COLOR_WHITE,
+        width = width,
+        row,
+    }
+end
+
+function SettingsUI.showPaginatedPanel(opts)
+    opts = opts or {}
+    local all_rows = opts.rows or {}
+    local page_size = opts.page_size or SettingsUI.ICON_PAGE_SIZE
+    local icons = opts.icons
+    local title_base = opts.title or "Settings"
+    local on_close = opts.on_close
+    local page = 1
+    local panel_ref = { panel = nil }
+
+    local function rebuild()
+        if panel_ref.panel then
+            UIManager:close(panel_ref.panel)
+            panel_ref.panel = nil
+        end
+        local slice, cur_page, page_count = SettingsUI.sliceRows(all_rows, page, page_size)
+        page = cur_page
+        local rows = {}
+        for _, row in ipairs(slice) do
+            table.insert(rows, row)
+        end
+        if page_count > 1 then
+            table.insert(rows, {
+                widget = pagerBar({
+                    width = Screen:getWidth(),
+                    page = cur_page,
+                    page_count = page_count,
+                    icons = icons,
+                    show_parent = panel_ref.panel,
+                    on_prev = function()
+                        if page > 1 then
+                            page = page - 1
+                            rebuild()
+                        end
+                    end,
+                    on_next = function()
+                        if page < page_count then
+                            page = page + 1
+                            rebuild()
+                        end
+                    end,
+                }),
+            })
+        end
+        local title = title_base
+        if page_count > 1 then
+            title = string.format("%s · %d/%d", title_base, cur_page, page_count)
+        end
+        panel_ref.panel = SettingsPanel:new{
+            title = title,
+            icons = icons,
+            rows = rows,
+            on_close = on_close,
+        }
+        if opts.set_panel then
+            opts.set_panel(panel_ref.panel)
+        end
+        UIManager:show(panel_ref.panel, "ui")
+    end
+
+    rebuild()
+    return panel_ref.panel
 end
 
 SettingsUI.IconTextRow = IconTextRow
