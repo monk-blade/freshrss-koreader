@@ -30,7 +30,7 @@ function ListFormat.formatArticleDate(ts, now)
 end
 
 ---Right-column text: "Feed · 12:30" / "Feed · Jul 12" / feed-only / date-only.
--- Menu renders this as mandatory (smaller font than the title).
+-- Used as list row line 2 (and formerly Menu mandatory).
 function ListFormat.rowMandatory(article, now)
     article = article or {}
     local date = ListFormat.formatArticleDate(
@@ -45,6 +45,23 @@ function ListFormat.rowMandatory(article, now)
     if feed ~= "" then return feed end
     if date then return date end
     return nil
+end
+
+---Two-line list body: "● Title\\nFeed · 12:30".
+function ListFormat.rowText(article, opts)
+    opts = opts or {}
+    article = article or {}
+    local unread_mark = opts.unread_mark or "● "
+    local read_mark = opts.read_mark or "○ "
+    local marker = article.unread and unread_mark or read_mark
+    local star = article.starred and (opts.star_mark or "★ ") or ""
+    local title = tostring(opts.title or article.title or "Untitled")
+    local line1 = marker .. star .. title
+    local sub = ListFormat.rowMandatory(article, opts.now)
+    if sub and sub ~= "" then
+        return line1 .. "\n" .. sub
+    end
+    return line1
 end
 
 ---Lookup unread count for a stream id from FreshRSS unread-count meta.

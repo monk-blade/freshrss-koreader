@@ -85,9 +85,10 @@ describe("FreshRSS list_fonts helpers", function()
         assert.equals(18, ListFonts.readFontSize())
     end)
 
-    it("displayName shows basename or Default", function()
+    it("displayName shows friendly basename or Default", function()
         assert.equals("Default", ListFonts.displayName(nil))
-        assert.equals("Roboto.ttf", ListFonts.displayName("/a/b/Roboto.ttf"))
+        assert.equals("Roboto", ListFonts.displayName("/a/b/Roboto.ttf"))
+        assert.equals("Rasa", ListFonts.displayName("/fonts/Rasa-VariableFont_wght.ttf"))
     end)
 
     it("builds missing-font hint when preferred fonts absent", function()
@@ -103,5 +104,38 @@ describe("FreshRSS list_fonts helpers", function()
         assert.is_true(ListFonts.maybeShowMissingHint(function(m) shown[#shown + 1] = m end, {}))
         assert.equals(1, #shown)
         assert.is_false(ListFonts.maybeShowMissingHint(function() end, {}))
+    end)
+
+    it("restores fontmap and evicts remapped faces from Font.faces", function()
+        package.loaded["ui/font"] = nil
+        local faces = {
+            ["NotoSans-Regular.ttf22"] = { realname = "NotoSans-Regular.ttf", fallbacks = { true } },
+            ["/fonts/RobotoCondensed-Regular.ttf22"] = { realname = "/fonts/RobotoCondensed-Regular.ttf", fallbacks = { true } },
+            ["/fonts/NotoSerifGujarati-Regular.ttf22"] = { realname = "/fonts/NotoSerifGujarati-Regular.ttf", fallbacks = { true } },
+        }
+        package.preload["ui/font"] = function()
+            return {
+                fontmap = { smallinfofont = "NotoSans-Regular.ttf" },
+                fallbacks = {
+                    "NotoSans-Regular.ttf",
+                    "NotoSansCJKsc-Regular.otf",
+                },
+                faces = faces,
+            }
+        end
+        ListFonts.saveLatinFont("/fonts/RobotoCondensed-Regular.ttf")
+        ListFonts.saveGujaratiFont("/fonts/NotoSerifGujarati-Regular.ttf")
+        ListFonts.apply()
+        local Font = require("ui/font")
+        assert.equals("/fonts/RobotoCondensed-Regular.ttf", Font.fontmap.smallinfofont)
+        assert.equals("/fonts/NotoSerifGujarati-Regular.ttf", Font.fallbacks[2])
+        ListFonts.restore()
+        assert.equals("NotoSans-Regular.ttf", Font.fontmap.smallinfofont)
+        assert.equals("NotoSansCJKsc-Regular.otf", Font.fallbacks[2])
+        assert.is_nil(Font.faces["/fonts/RobotoCondensed-Regular.ttf22"])
+        assert.is_nil(Font.faces["/fonts/NotoSerifGujarati-Regular.ttf22"])
+        assert.is_nil(Font.faces["NotoSans-Regular.ttf22"].fallbacks)
+        package.preload["ui/font"] = nil
+        package.loaded["ui/font"] = nil
     end)
 end)

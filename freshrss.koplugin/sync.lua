@@ -8,6 +8,8 @@ local MIN_ARTICLE_CAP = 20
 local MAX_ARTICLE_CAP = 500
 local PAGE_SIZE = 100
 local MAX_SYNC_IMAGES = 50
+local EDIT_TAG_BATCH = 40
+local CONTENTS_BATCH = 40
 
 -- Prefer settings-backed budget when Images module is wired; else constant.
 local function hasCategory(categories, state_id)
@@ -188,41 +190,73 @@ function Sync.streamLabel(browse, stream_id, cache)
     return "Reading list"
 end
 
--- Fetch stream pages until continuation ends or max_articles is reached.
+-- Enumerate stream item ids, then fetch contents only for cache misses.
 -- browse: optional { mode, feed_id, label }; stream_id overrides when provided.
 function Sync:fetchAllStreamItems(api, stream_id, on_progress, browse)
     local opts = self:syncOptions(browse)
     local sid = stream_id or opts.stream_id
-    local items = {}
+    local all_ids = {}
     local continuation
     local pages = 0
-    while #items < opts.max_articles do
+    while #all_ids < opts.max_articles do
         pages = pages + 1
-        local n = math.min(opts.page_size, opts.max_articles - #items)
-        local ratio = 0.55 + 0.30 * (#items / opts.max_articles)
+        local n = math.min(opts.page_size, opts.max_articles - #all_ids)
+        local ratio = 0.55 + 0.20 * (#all_ids / opts.max_articles)
         report(on_progress, "stream", ratio)
-        local stream, err = api:stream(sid, {
+        local page, err = api:streamItemIds(sid, {
             n = n,
             exclude_read = opts.exclude_read,
             continuation = continuation,
         })
-        if not stream or type(stream.items) ~= "table" then
-            if #items == 0 then
-                return nil, err or "FreshRSS returned no article stream"
+        if not page or type(page.ids) ~= "table" then
+            if #all_ids == 0 then
+                return nil, err or "FreshRSS returned no article ids"
             end
             break
         end
-        if #stream.items == 0 then break end
-        for _, raw in ipairs(stream.items) do
-            if #items >= opts.max_articles then break end
-            table.insert(items, raw)
+        if #page.ids == 0 then break end
+        for _, id in ipairs(page.ids) do
+            if #all_ids >= opts.max_articles then break end
+            table.insert(all_ids, id)
         end
-        if #items >= opts.max_articles then break end
-        continuation = stream.continuation
+        if #all_ids >= opts.max_articles then break end
+        continuation = page.continuation
         if not continuation or tostring(continuation) == "" then break end
         if pages >= 50 then break end
     end
+
+    local missing = {}
+    for _, id in ipairs(all_ids) do
+        if not self.cache:getArticle(id) then
+            table.insert(missing, id)
+        end
+    end
+
+    local items = {}
+    local batch = CONTENTS_BATCH
+    if api.CONTENTS_BATCH then batch = api.CONTENTS_BATCH end
+    for i = 1, #missing, batch do
+        local chunk = {}
+        for j = i, math.min(i + batch - 1, #missing) do
+            table.insert(chunk, missing[j])
+        end
+        local ratio = 0.75 + 0.15 * (i / math.max(#missing, 1))
+        report(on_progress, "cache", ratio)
+        local contents, err = api:streamItemContents(chunk)
+        if not contents or type(contents.items) ~= "table" then
+            if #items == 0 and #missing > 0 then
+                return nil, err or "FreshRSS returned no article contents"
+            end
+            break
+        end
+        for _, raw in ipairs(contents.items) do
+            table.insert(items, raw)
+        end
+    end
+
     opts.stream_id = sid
+    opts.ids_seen = #all_ids
+    opts.ids_missing = #missing
     return items, nil, opts
 end
 
@@ -408,25 +442,92 @@ function Sync:applyAction(api, id, action, state)
 end
 
 function Sync:flushQueue(api)
-    local flushed, failed = 0, 0
+    local pending = {}
     while #self.cache:queuedActions() > 0 do
-        local action = self.cache:dequeue()
-        local ok = api:editTag(action.id, action.action, action.state)
-        if not ok then
-            api:invalidateSession()
-            if not api:login() then
-                self:queueAction(action.id, action.action, action.state)
-                failed = failed + 1
-                break
-            end
-            ok = api:editTag(action.id, action.action, action.state)
-            if not ok then
-                self:queueAction(action.id, action.action, action.state)
-                failed = failed + 1
-                break
-            end
+        table.insert(pending, self.cache:dequeue())
+    end
+    if #pending == 0 then
+        return { flushed = 0, failed = 0 }
+    end
+
+    -- Preserve order of first appearance of each (action, state) group.
+    local groups = {}
+    local by_key = {}
+    for _, action in ipairs(pending) do
+        local key = tostring(action.action) .. "\0" .. tostring(action.state and true or false)
+        local group = by_key[key]
+        if not group then
+            group = {
+                action = action.action,
+                state = action.state and true or false,
+                ids = {},
+                items = {},
+            }
+            by_key[key] = group
+            table.insert(groups, group)
         end
-        flushed = flushed + 1
+        table.insert(group.ids, action.id)
+        table.insert(group.items, action)
+    end
+
+    local flushed, failed = 0, 0
+    local batch = EDIT_TAG_BATCH
+    if api.EDIT_TAG_BATCH then batch = api.EDIT_TAG_BATCH end
+
+    local function requeueFrom(list, start_index)
+        for i = start_index, #list do
+            local action = list[i]
+            self:queueAction(action.id, action.action, action.state)
+            failed = failed + 1
+        end
+    end
+
+    for _, group in ipairs(groups) do
+        for i = 1, #group.ids, batch do
+            local chunk_ids = {}
+            local chunk_items = {}
+            for j = i, math.min(i + batch - 1, #group.ids) do
+                table.insert(chunk_ids, group.ids[j])
+                table.insert(chunk_items, group.items[j])
+            end
+            local ok = api:editTagMany(chunk_ids, group.action, group.state)
+            if not ok then
+                api:invalidateSession()
+                if not api:login() then
+                    requeueFrom(group.items, i)
+                    -- Requeue remaining groups untouched.
+                    local seen = false
+                    for _, later in ipairs(groups) do
+                        if later == group then
+                            seen = true
+                        elseif seen then
+                            for _, action in ipairs(later.items) do
+                                self:queueAction(action.id, action.action, action.state)
+                                failed = failed + 1
+                            end
+                        end
+                    end
+                    return { flushed = flushed, failed = failed }
+                end
+                ok = api:editTagMany(chunk_ids, group.action, group.state)
+                if not ok then
+                    requeueFrom(group.items, i)
+                    local seen = false
+                    for _, later in ipairs(groups) do
+                        if later == group then
+                            seen = true
+                        elseif seen then
+                            for _, action in ipairs(later.items) do
+                                self:queueAction(action.id, action.action, action.state)
+                                failed = failed + 1
+                            end
+                        end
+                    end
+                    return { flushed = flushed, failed = failed }
+                end
+            end
+            flushed = flushed + #chunk_ids
+        end
     end
     return { flushed = flushed, failed = failed }
 end

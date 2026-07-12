@@ -11,6 +11,7 @@ local ICON_FILES = {
     star = "star.svg",
     star_filled = "star-filled.svg",
     book_open = "book-open.svg",
+    book = "book.svg",
     settings = "settings.svg",
     inbox = "inbox.svg",
     wifi_off = "wifi-off.svg",
@@ -19,11 +20,37 @@ local ICON_FILES = {
     chevron_left = "chevron-left.svg",
     chevron_right = "chevron-right.svg",
     list_filter = "list-filter.svg",
+    layout_list = "layout-list.svg",
+    plug = "plug.svg",
+    link = "link.svg",
+    unplug = "unplug.svg",
+    database = "database.svg",
+    type = "type.svg",
+    image = "image.svg",
+    a_large_small = "a-large-small.svg",
+    heading = "heading.svg",
+    align_justify = "align-justify.svg",
+    move_vertical = "move-vertical.svg",
+    square = "square.svg",
+    panel_left = "panel-left.svg",
+    newspaper = "newspaper.svg",
+    briefcase = "briefcase.svg",
+    cpu = "cpu.svg",
+    globe = "globe.svg",
+    heart = "heart.svg",
+    plus = "plus.svg",
+    layers = "layers.svg",
+    bookmark = "bookmark.svg",
+    tag = "tag.svg",
+    rss = "rss.svg",
+    folder = "folder.svg",
+    music = "music.svg",
+    gamepad_2 = "gamepad-2.svg",
 }
 
 local function buttonIconSize()
     local ok, Device = pcall(require, "device")
-    if ok and Device and Device.screen then
+    if ok and Device and Device.screen and Device.screen.scaleBySize then
         return Device.screen:scaleBySize(24)
     end
     return 24
@@ -44,9 +71,22 @@ function Icons:path(key)
     return self.assets_dir .. "/" .. file
 end
 
+function Icons:has(key)
+    return ICON_FILES[key] ~= nil
+end
+
 -- IconWidget / TitleBar / Button name (looked up under DataStorage/icons/).
 function Icons:name(key)
     return "freshrss." .. key:gsub("_", "-")
+end
+
+function Icons:keys()
+    local keys = {}
+    for key in pairs(ICON_FILES) do
+        table.insert(keys, key)
+    end
+    table.sort(keys)
+    return keys
 end
 
 -- ButtonTable entry helper: icon-only action with shared size across home/viewer.
@@ -90,5 +130,7 @@ function Icons:install()
     end
     self.installed = true
 end
+
+Icons.ICON_FILES = ICON_FILES
 
 return Icons

@@ -8,14 +8,12 @@ Source: https://github.com/lucide-icons/lucide
 
 Vendored assets in `freshrss.koplugin/assets/icons/`:
 
-- `refresh.svg`
-- `star.svg`
-- `book-open.svg`
-- `settings.svg`
-- `inbox.svg`
-- `wifi-off.svg`
-- `circle.svg`
-- `check-circle.svg`
+- `refresh.svg`, `star.svg`, `star-filled.svg`, `book-open.svg`, `book.svg`, `settings.svg`, `inbox.svg`
+- `wifi-off.svg`, `circle.svg`, `check-circle.svg`, `chevron-left.svg`, `chevron-right.svg`, `list-filter.svg`
+- `plug.svg`, `link.svg`, `unplug.svg`, `database.svg`, `type.svg`, `image.svg`
+- `a-large-small.svg`, `heading.svg`, `align-justify.svg`, `move-vertical.svg`, `square.svg`, `panel-left.svg`
+- `newspaper.svg`, `briefcase.svg`, `cpu.svg`, `globe.svg`, `heart.svg`, `plus.svg`
+- `freshrss.svg` (project brand mark)
 
 ```text
 ISC License

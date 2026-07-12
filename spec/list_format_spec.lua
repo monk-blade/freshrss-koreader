@@ -42,6 +42,25 @@ describe("FreshRSS list_format helpers", function()
         }, now))
     end)
 
+    it("builds two-line row text with title then feed · time", function()
+        local ts = os.time({ year = 2026, month = 7, day = 12, hour = 9, min = 5, sec = 0 })
+        local now = os.time({ year = 2026, month = 7, day = 12, hour = 12, min = 0, sec = 0 })
+        local text = ListFormat.rowText({
+            title = "Hello",
+            unread = true,
+            starred = true,
+            feed_title = "Feed",
+            updated = ts,
+        }, { now = now })
+        assert.equals("● ★ Hello\nFeed · " .. os.date("%H:%M", ts), text)
+        local read = ListFormat.rowText({
+            title = "Done",
+            unread = false,
+            feed_title = "Feed",
+        }, { now = now })
+        assert.equals("○ Done\nFeed", read)
+    end)
+
     it("looks up unread counts by stream id", function()
         local meta = {
             unreadcounts = {

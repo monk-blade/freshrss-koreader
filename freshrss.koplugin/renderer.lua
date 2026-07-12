@@ -21,6 +21,15 @@ local Screen = Device.screen
 
 local plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)/[^/]+$")
 local Images = dofile(plugin_dir .. "/images.lua")
+local ListFonts = dofile(plugin_dir .. "/list_fonts.lua")
+
+local SettingsUI
+local function getSettingsUI()
+    if not SettingsUI then
+        SettingsUI = dofile(plugin_dir .. "/settings_ui.lua")
+    end
+    return SettingsUI
+end
 
 local Renderer = {}
 
@@ -36,9 +45,9 @@ local LINE_HEIGHT_STEP = 0.05
 -- Legacy discrete presets (still used by cycleLineHeight for quick tap).
 local LINE_HEIGHTS = { 1.2, 1.45, 1.7 }
 local DEFAULT_JUSTIFY = true
-local DEFAULT_PAD_TOP = 0.2
+local DEFAULT_PAD_TOP = 0.0
 local DEFAULT_PAD_SIDE = 0.5
-local DEFAULT_PAD_BOTTOM = 0.2
+local DEFAULT_PAD_BOTTOM = 0.0
 local PAD_MIN = 0.0
 local PAD_MAX = 3.0
 local PAD_STEP = 0.1
@@ -70,15 +79,21 @@ local function cssBase(line_height, show_images, justify, pad_top, pad_side, pad
     local side = padToPx(pad_side or DEFAULT_PAD_SIDE)
     local bottom = padToPx(pad_bottom or DEFAULT_PAD_BOTTOM)
     return string.format([[
-html, body { margin: 0 !important; }
-body { padding: %dpx %dpx %dpx %dpx; line-height: %s; %s}
-body > *:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+html, body { margin: 0 !important; padding: 0 !important; }
+body { padding: %dpx %dpx %dpx %dpx !important; line-height: %s; %s}
+body > *:first-child,
+body > *:first-child > *:first-child,
+body > *:first-child > *:first-child > *:first-child {
+  margin-top: 0 !important; padding-top: 0 !important;
+}
 p { margin: 0.35em 0; line-height: %s; %s}
 p:first-child { margin-top: 0; }
 h1, h2, h3, h4 { margin: 0.6em 0 0.3em; line-height: 1.25; }
 h1:first-child, h2:first-child, h3:first-child, h4:first-child { margin-top: 0; }
+img:first-child, body > img:first-child { margin-top: 0 !important; }
 a { text-decoration: underline; }
 blockquote { margin: 0.5em 0; padding-left: 0.8em; border-left: 2px solid #888; }
+blockquote:first-child { margin-top: 0; }
 pre, code { font-family: monospace; }
 pre { white-space: pre-wrap; }
 ul, ol { margin: 0.4em 0; padding-left: 1.4em; }
@@ -131,15 +146,34 @@ function Renderer.sanitizeHtml(html)
     body = body:gsub("<VIDEO[%s>].-</VIDEO>", "")
     body = body:gsub("<audio[%s>].-</audio>", "")
     body = body:gsub("<AUDIO[%s>].-</AUDIO>", "")
-    -- Drop leading empty paragraphs / breaks that create a fake top margin.
-    for _ = 1, 5 do
+    -- Drop leading empty wrappers / breaks that create a fake top margin.
+    for _ = 1, 8 do
         local trimmed = body
             :gsub("^%s+", "")
             :gsub("^<%s*[pP][^>]*>%s*<%s*/%s*[pP]%s*>", "")
             :gsub("^<%s*[pP][^>]*>%s*&nbsp;%s*<%s*/%s*[pP]%s*>", "")
             :gsub("^<%s*[pP][^>]*>%s*<br%s*/?%s*>%s*<%s*/%s*[pP]%s*>", "")
+            :gsub("^<%s*[pP][^>]*>%s+<%s*/%s*[pP]%s*>", "")
+            :gsub("^<%s*[dD][iI][vV][^>]*>%s*<%s*/%s*[dD][iI][vV]%s*>", "")
+            :gsub("^<%s*[sS][pP][aA][nN][^>]*>%s*<%s*/%s*[sS][pP][aA][nN]%s*>", "")
+            :gsub("^<%s*[dD][iI][vV][^>]*>%s*&nbsp;%s*<%s*/%s*[dD][iI][vV]%s*>", "")
             :gsub("^<%s*br%s*/?%s*>", "")
             :gsub("^&nbsp;", "")
+            -- Strip leading inline top margin/padding on the first open tag.
+            :gsub("^(<%s*%w+[^>]-)%s[sS][tT][yY][lL][eE]%s*=%s*\"([^\"]*)\"", function(open, style)
+                local cleaned = style
+                    :gsub("[Mm][Aa][Rr][Gg][Ii][Nn]%-[Tt][Oo][Pp]%s*:[^;]*;?", "")
+                    :gsub("[Pp][Aa][Dd][Dd][Ii][Nn][Gg]%-[Tt][Oo][Pp]%s*:[^;]*;?", "")
+                    :gsub("[Mm][Aa][Rr][Gg][Ii][Nn]%s*:[^;]*;?", "")
+                    :gsub("^%s*;%s*", "")
+                    :gsub("%s*;%s*$", "")
+                    :gsub("^%s+", "")
+                    :gsub("%s+$", "")
+                if cleaned == "" then
+                    return open
+                end
+                return open .. ' style="' .. cleaned .. '"'
+            end)
         if trimmed == body then break end
         body = trimmed
     end
@@ -448,6 +482,9 @@ function ArticleViewer:init()
     if Device:isTouchDevice() then
         local range = Geom:new{ x = 0, y = 0, w = screen_w, h = screen_h }
         self.ges_events = {
+            TapNav = {
+                GestureRange:new{ ges = "tap", range = range },
+            },
             SwipeNav = {
                 GestureRange:new{ ges = "swipe", range = range },
             },
@@ -564,9 +601,10 @@ end
 function ArticleViewer:_buildTitleBar()
     local article = self.article or {}
     local title = util.htmlEntitiesToUtf8(tostring(article.title or "Untitled"))
-    local published = tonumber(article.published) or os.time()
+    local published = tonumber(article.published) or tonumber(article.updated) or os.time()
     local index = self.callbacks.index or 0
     local total = self.callbacks.total or 0
+    -- Title stays readable (no shrink-to-fit); feed · date · index on subtitle.
     local subtitle = string.format("%s  ·  %s",
         article.feed_title or "FreshRSS",
         os.date("%Y-%m-%d", published))
@@ -582,10 +620,11 @@ function ArticleViewer:_buildTitleBar()
         subtitle = subtitle,
         title_face = Font:getFace("smalltfont", self.title_font_size),
         title_multilines = true,
+        title_shrink_font_to_fit = false,
         with_bottom_line = true,
-        title_top_padding = Size.padding.small,
+        title_top_padding = Size.padding.tiny,
         title_subtitle_v_padding = Screen:scaleBySize(1),
-        bottom_v_padding = Size.padding.small,
+        bottom_v_padding = Size.padding.tiny,
         left_icon = "appbar.menu",
         left_icon_size_ratio = 0.7,
         left_icon_tap_callback = function()
@@ -769,6 +808,7 @@ function ArticleViewer:onShowFontPicker()
         is_popout = false,
         is_borderless = true,
         covers_fullscreen = true,
+        is_enable_shortcut = false,
         close_callback = function()
             self.font_menu = nil
         end,
@@ -777,225 +817,190 @@ function ArticleViewer:onShowFontPicker()
 end
 
 function ArticleViewer:onShowViewSettings()
-    local dialog
+    local icons = self.icons
+    local function iname(key)
+        if icons and icons.name then return icons:name(key) end
+        return "freshrss." .. key:gsub("_", "-")
+    end
     local font_label = "Default"
     if self.font_face then
-        font_label = self.font_face:match("([^/]+)$") or self.font_face
+        font_label = ListFonts.displayName(self.font_face)
     end
-    local buttons = {
+    local panel
+    local function reopen()
+        if panel then UIManager:close(panel) end
+        self:onShowViewSettings()
+    end
+    local rows = {
         {
-            {
-                text_func = function()
-                    return string.format("Font size: %d", self.font_size)
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    local widget = SpinWidget:new{
-                        title_text = "Font size",
-                        value = self.font_size,
-                        value_min = FONT_SIZE_MIN,
-                        value_max = FONT_SIZE_MAX,
-                        default_value = DEFAULT_FONT_SIZE,
-                        keep_shown_on_apply = true,
-                        callback = function(spin)
-                            self.font_size = spin.value
-                            Renderer.saveFontSize(self.font_size)
-                            self:reinit()
-                        end,
-                    }
-                    UIManager:show(widget)
-                end,
-            },
+            icon = iname("a_large_small"),
+            text = string.format("Font size: %d", self.font_size),
+            callback = function()
+                UIManager:close(panel)
+                UIManager:show(SpinWidget:new{
+                    title_text = "Font size",
+                    value = self.font_size,
+                    value_min = FONT_SIZE_MIN,
+                    value_max = FONT_SIZE_MAX,
+                    default_value = DEFAULT_FONT_SIZE,
+                    keep_shown_on_apply = true,
+                    callback = function(spin)
+                        self.font_size = spin.value
+                        Renderer.saveFontSize(self.font_size)
+                        self:reinit()
+                    end,
+                })
+            end,
         },
         {
-            {
-                text_func = function()
-                    return string.format("Title font size: %d", self.title_font_size)
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    local widget = SpinWidget:new{
-                        title_text = "Title font size",
-                        value = self.title_font_size,
-                        value_min = FONT_SIZE_MIN,
-                        value_max = FONT_SIZE_MAX,
-                        default_value = DEFAULT_TITLE_FONT_SIZE,
-                        keep_shown_on_apply = true,
-                        callback = function(spin)
-                            self.title_font_size = spin.value
-                            Renderer.saveTitleFontSize(self.title_font_size)
-                            self:reinitTitle()
-                        end,
-                    }
-                    UIManager:show(widget)
-                end,
-            },
+            icon = iname("heading"),
+            text = string.format("Title font size: %d", self.title_font_size),
+            callback = function()
+                UIManager:close(panel)
+                UIManager:show(SpinWidget:new{
+                    title_text = "Title font size",
+                    value = self.title_font_size,
+                    value_min = FONT_SIZE_MIN,
+                    value_max = FONT_SIZE_MAX,
+                    default_value = DEFAULT_TITLE_FONT_SIZE,
+                    keep_shown_on_apply = true,
+                    callback = function(spin)
+                        self.title_font_size = spin.value
+                        Renderer.saveTitleFontSize(self.title_font_size)
+                        self:reinitTitle()
+                    end,
+                })
+            end,
         },
         {
-            {
-                text_func = function()
-                    return "Font: " .. font_label
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    self:onShowFontPicker()
-                end,
-            },
+            icon = iname("type"),
+            text = "Font: " .. font_label,
+            callback = function()
+                UIManager:close(panel)
+                self:onShowFontPicker()
+            end,
         },
         {
-            {
-                text_func = function()
-                    return string.format("Line height: %s", Renderer.formatLineHeight(self.line_height))
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    Renderer.showSpacingSpin({
-                        title = "Line height",
-                        info_text = "Article body line spacing",
-                        value = self.line_height,
-                        value_min = LINE_HEIGHT_MIN,
-                        value_max = LINE_HEIGHT_MAX,
-                        value_step = LINE_HEIGHT_STEP,
-                        precision = "%.2f",
-                        default_value = DEFAULT_LINE_HEIGHT,
-                        callback = function(value)
-                            self.line_height = Renderer.clampLineHeight(value)
-                            Renderer.saveLineHeight(self.line_height)
-                            self:reinit()
-                        end,
-                    })
-                end,
-            },
+            icon = iname("move_vertical"),
+            text = string.format("Line height: %s", Renderer.formatLineHeight(self.line_height)),
+            callback = function()
+                UIManager:close(panel)
+                Renderer.showSpacingSpin({
+                    title = "Line height",
+                    info_text = "Article body line spacing",
+                    value = self.line_height,
+                    value_min = LINE_HEIGHT_MIN,
+                    value_max = LINE_HEIGHT_MAX,
+                    value_step = LINE_HEIGHT_STEP,
+                    precision = "%.2f",
+                    default_value = DEFAULT_LINE_HEIGHT,
+                    callback = function(value)
+                        self.line_height = Renderer.clampLineHeight(value)
+                        Renderer.saveLineHeight(self.line_height)
+                        self:reinit()
+                    end,
+                })
+            end,
         },
         {
-            {
-                text_func = function()
-                    return self.show_images and "Show images: on" or "Show images: off"
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    self.show_images = not self.show_images
-                    Renderer.saveShowImages(self.show_images)
-                    self:reinit()
-                    if self.show_images and self.callbacks.on_images_enabled then
-                        self.callbacks.on_images_enabled()
-                    end
-                end,
-            },
+            icon = iname("image"),
+            text = self.show_images and "Show images: on" or "Show images: off",
+            callback = function()
+                UIManager:close(panel)
+                self.show_images = not self.show_images
+                Renderer.saveShowImages(self.show_images)
+                self:reinit()
+                if self.show_images and self.callbacks.on_images_enabled then
+                    self.callbacks.on_images_enabled()
+                end
+            end,
         },
         {
-            {
-                text_func = function()
-                    return self.justify_text and "Justify text: on" or "Justify text: off"
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    self.justify_text = not self.justify_text
-                    Renderer.saveJustifyText(self.justify_text)
-                    self:reinit()
-                end,
-            },
+            icon = iname("align_justify"),
+            text = self.justify_text and "Justify text: on" or "Justify text: off",
+            callback = function()
+                UIManager:close(panel)
+                self.justify_text = not self.justify_text
+                Renderer.saveJustifyText(self.justify_text)
+                self:reinit()
+            end,
         },
         {
-            {
-                text_func = function()
-                    return "Side padding: " .. Renderer.formatPad(self.pad_side)
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    Renderer.showSpacingSpin({
-                        title = "Side padding",
-                        info_text = "Left and right body padding (em)",
-                        value = self.pad_side,
-                        value_min = PAD_MIN,
-                        value_max = PAD_MAX,
-                        value_step = PAD_STEP,
-                        precision = "%.1f",
-                        default_value = DEFAULT_PAD_SIDE,
-                        callback = function(value)
-                            self.pad_side = value
-                            Renderer.savePadSide(value)
-                            self.pad_side = Renderer.readPadSide()
-                            self:reinit()
-                        end,
-                    })
-                end,
-            },
+            icon = iname("square"),
+            text = "Side padding: " .. Renderer.formatPad(self.pad_side),
+            callback = function()
+                UIManager:close(panel)
+                Renderer.showSpacingSpin({
+                    title = "Side padding",
+                    info_text = "Left and right body padding (em)",
+                    value = self.pad_side,
+                    value_min = PAD_MIN,
+                    value_max = PAD_MAX,
+                    value_step = PAD_STEP,
+                    precision = "%.1f",
+                    default_value = DEFAULT_PAD_SIDE,
+                    callback = function(value)
+                        self.pad_side = value
+                        Renderer.savePadSide(value)
+                        self.pad_side = Renderer.readPadSide()
+                        self:reinit()
+                    end,
+                })
+            end,
         },
         {
-            {
-                text_func = function()
-                    return "Top margin: " .. Renderer.formatPad(self.pad_top)
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    Renderer.showSpacingSpin({
-                        title = "Top margin",
-                        info_text = "Top body padding (em)",
-                        value = self.pad_top,
-                        value_min = PAD_MIN,
-                        value_max = PAD_MAX,
-                        value_step = PAD_STEP,
-                        precision = "%.1f",
-                        default_value = DEFAULT_PAD_TOP,
-                        callback = function(value)
-                            Renderer.savePadTop(value)
-                            self.pad_top = Renderer.readPadTop()
-                            self:reinit()
-                        end,
-                    })
-                end,
-            },
+            icon = iname("panel_left"),
+            text = "Top margin: " .. Renderer.formatPad(self.pad_top),
+            callback = function()
+                UIManager:close(panel)
+                Renderer.showSpacingSpin({
+                    title = "Top margin",
+                    info_text = "Top body padding (em)",
+                    value = self.pad_top,
+                    value_min = PAD_MIN,
+                    value_max = PAD_MAX,
+                    value_step = PAD_STEP,
+                    precision = "%.1f",
+                    default_value = DEFAULT_PAD_TOP,
+                    callback = function(value)
+                        Renderer.savePadTop(value)
+                        self.pad_top = Renderer.readPadTop()
+                        self:reinit()
+                    end,
+                })
+            end,
         },
         {
-            {
-                text_func = function()
-                    return "Bottom margin: " .. Renderer.formatPad(self.pad_bottom)
-                end,
-                align = "left",
-                callback = function()
-                    UIManager:close(dialog)
-                    Renderer.showSpacingSpin({
-                        title = "Bottom margin",
-                        info_text = "Bottom body padding (em)",
-                        value = self.pad_bottom,
-                        value_min = PAD_MIN,
-                        value_max = PAD_MAX,
-                        value_step = PAD_STEP,
-                        precision = "%.1f",
-                        default_value = DEFAULT_PAD_BOTTOM,
-                        callback = function(value)
-                            Renderer.savePadBottom(value)
-                            self.pad_bottom = Renderer.readPadBottom()
-                            self:reinit()
-                        end,
-                    })
-                end,
-            },
+            icon = iname("panel_left"),
+            text = "Bottom margin: " .. Renderer.formatPad(self.pad_bottom),
+            callback = function()
+                UIManager:close(panel)
+                Renderer.showSpacingSpin({
+                    title = "Bottom margin",
+                    info_text = "Bottom body padding (em)",
+                    value = self.pad_bottom,
+                    value_min = PAD_MIN,
+                    value_max = PAD_MAX,
+                    value_step = PAD_STEP,
+                    precision = "%.1f",
+                    default_value = DEFAULT_PAD_BOTTOM,
+                    callback = function(value)
+                        Renderer.savePadBottom(value)
+                        self.pad_bottom = Renderer.readPadBottom()
+                        self:reinit()
+                    end,
+                })
+            end,
         },
     }
-    dialog = ButtonDialog:new{
+    panel = getSettingsUI().showPanel({
         title = "View settings",
-        shrink_unneeded_width = true,
-        buttons = buttons,
-        anchor = function()
-            if self.title_bar.left_button and self.title_bar.left_button.image then
-                return self.title_bar.left_button.image.dimen
-            end
-        end,
-    }
-    UIManager:show(dialog)
+        icons = icons,
+        rows = rows,
+        on_close = function() end,
+    })
     return true
 end
-
 function ArticleViewer:onShow()
     UIManager:setDirty(self, function()
         return "ui", self.dimen
@@ -1010,11 +1015,65 @@ function ArticleViewer:scroll(direction)
     return true
 end
 
+function ArticleViewer:_atLastPage()
+    local hw = self.html_widget
+    local box = hw and hw.htmlbox_widget
+    if not box then return true end
+    local page = tonumber(box.page_number) or 1
+    local count = tonumber(box.page_count) or 1
+    return page >= count
+end
+
+function ArticleViewer:_atFirstPage()
+    local hw = self.html_widget
+    local box = hw and hw.htmlbox_widget
+    if not box then return true end
+    local page = tonumber(box.page_number) or 1
+    return page <= 1
+end
+
+function ArticleViewer:onTapNav(_, ges)
+    if not ges or not ges.pos then return false end
+    local right_half = ges.pos.x >= (Screen:getWidth() / 2)
+    if right_half then
+        if self:_atLastPage() then
+            if self.callbacks.on_next and self.callbacks.next_id then
+                self.callbacks.on_next()
+                return true
+            end
+            return false
+        end
+        return self:scroll(1)
+    end
+    if self:_atFirstPage() then
+        if self.callbacks.on_prev and self.callbacks.prev_id then
+            self.callbacks.on_prev()
+            return true
+        end
+        return false
+    end
+    return self:scroll(-1)
+end
+
 function ArticleViewer:onScrollDown()
+    if self:_atLastPage() then
+        if self.callbacks.on_next and self.callbacks.next_id then
+            self.callbacks.on_next()
+            return true
+        end
+        return false
+    end
     return self:scroll(1)
 end
 
 function ArticleViewer:onScrollUp()
+    if self:_atFirstPage() then
+        if self.callbacks.on_prev and self.callbacks.prev_id then
+            self.callbacks.on_prev()
+            return true
+        end
+        return false
+    end
     return self:scroll(-1)
 end
 

@@ -5,13 +5,15 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 ## Features
 
 - Offline-first: opens the local cache immediately (no hang on launch)
-- Full-screen home with FreshRSS brand mark (tap to sync) and icon action bar (**Browse / Mark all / Settings**)
+- **Home chrome**: TitleBar (brand sync + title + close) with **Browse / Mark all / Settings** on the favorites row beside category chips
+- **Favorite category chips**: tap to open a FreshRSS label; Lucide icon or two-letter tile; hold to pick an icon; **+** to manage favorites (also under Appearance)
 - Denser article list: unread/star markers, **feed · post time** on each row (no keyboard shortcut letters), single-line titles; restores list page after closing an article
 - Browse modes: All / Unread / Starred / Feeds / Categories (Feeds and Categories show **unread counts** from last sync)
 - **List sort** (newest / oldest) and **hide feeds** (long-press a feed; hidden feeds stay out of All/Unread)
 - **Sync scope**: current browse view (default) or always reading list; sync toast names the stream
+- **Efficient sync**: pages `stream/items/ids`, fetches `stream/items/contents` only for cache misses; flushes pending mark/star in batched `edit-tag` requests
 - **Cache retention**: max retained articles (500–5000), auto-evict oldest non-starred after sync, Clean cache now, approximate cache size in Settings
-- Grouped Settings: Connection / Sync / Cache / Appearance / Images / Queue
+- **Icon Settings hub** (Connection / Sync / Cache / Appearance / Images / Queue) — Lucide icons, no QWERTY letter boxes
 - **Mark read on open** (default on); turn off to leave articles unread when opening
 - **List fonts**: Latin (e.g. Roboto Condensed) + Gujarati fallback (e.g. Noto Serif Gujarati) — install fonts in KOReader’s fonts folder, then pick under Appearance; **List font size** SpinWidget
 - Auto-refresh on open **off by default** (opt-in under Connection)
@@ -20,7 +22,7 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 - Configurable articles-per-sync cap (50 / 100 / 200 / 300) with continuation paging
 - Tunable image sync: images per article, sync budget, parallelism, max bytes, timeout profile
 - Mark all as read for the current browse stream
-- HTML article viewer with **View settings** (☰: body/title font size, line height / spacing, images, justify) and icon bar: Prev / Unread / Favorite / **Open original** / Next; session scroll position remembered when leaving an article
+- HTML article viewer with **icon View settings** (☰) and icon bar: Prev / Unread / Favorite / **Open original** / Next; session scroll position remembered when leaving an article; default top/bottom body pad **0**
 - Same viewer body/title font size, line height, and spacing also under Settings → Appearance
 - Local image download into the cache (MuPDF never fetches remote URLs); orphan images purged when cache is cleaned
 - Favorite / Mark unread with live button state; favorited articles are **pinned on disk** under `favorites/`
@@ -43,9 +45,9 @@ For clearer mixed-script article lists, install **Roboto Condensed** and **Noto 
 ## Usage
 
 1. **Tools → FreshRSS** — full-screen list of cached articles (Unread by default). Only the home title-bar **X** (or Back on the list) exits the plugin; closing an article returns to the list (same page).
-2. Tap the **FreshRSS mark** (left of the title) to sync the current view (or reading list if that scope is set). Tap **Browse** (filter icon) to switch All / Unread / Starred / Feeds / Categories.
+2. Tap the **FreshRSS mark** (left of the title) to sync the current view (or reading list if that scope is set). Use the **filter / check / gear** chips on the row under the title for Browse / Mark all / Settings.
 3. Auto-refresh on open is **off** by default (enable under Settings → Connection). Use **Mark read on open** to control whether opening marks articles read.
-4. Use the icon bar under the title (**filter** = Browse, **check** = Mark all, **gear** = Settings). Browse mode stays in the title. Long-press a feed in Feeds to hide/unhide it from All/Unread.
+4. Favorite category chips share that second row (after a separator). Browse mode stays in the title. Long-press a feed in Feeds to hide/unhide it from All/Unread.
 5. In an article: tap the **☰** menu for View settings; use the icon bar for Prev / Mark unread / Favorite / Open original / Next.
 
 ## Development and tests

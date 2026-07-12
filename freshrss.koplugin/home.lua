@@ -1,23 +1,83 @@
--- Full-screen FreshRSS home: title bar + action buttons + article list.
+-- Full-screen FreshRSS home: TitleBar + actions/favorites row + article list.
 local Blitbuffer = require("ffi/blitbuffer")
-local ButtonTable = require("ui/widget/buttontable")
 local Device = require("device")
-local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
+local IconButton = require("ui/widget/iconbutton")
 local InputContainer = require("ui/widget/container/inputcontainer")
+local LineWidget = require("ui/widget/linewidget")
 local Menu = require("ui/widget/menu")
 local Size = require("ui/size")
 local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
+local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
+
+local plugin_dir = debug.getinfo(1, "S").source:match("^@(.+)/[^/]+$")
+local FavCategories = dofile(plugin_dir .. "/fav_categories.lua")
+local SettingsUI = dofile(plugin_dir .. "/settings_ui.lua")
 
 local Home = InputContainer:extend{
     name = "freshrss_home",
     covers_fullscreen = true,
     plugin = nil,
 }
+
+local CategoryChip = InputContainer:extend{
+    name = "freshrss_category_chip",
+    fav = nil,
+    selected = false,
+    icons = nil,
+    callback = nil,
+    hold_callback = nil,
+    show_parent = nil,
+}
+
+function CategoryChip:init()
+    local side = Screen:scaleBySize(30)
+    local pad = Size.padding.tiny
+    local inner
+    local icon_key = self.fav and self.fav.icon
+    if icon_key and self.icons and self.icons:has(icon_key) then
+        local IconWidget = require("ui/widget/iconwidget")
+        inner = IconWidget:new{
+            icon = self.icons:name(icon_key),
+            width = side - 4,
+            height = side - 4,
+        }
+    else
+        local name = FavCategories.labelDisplayName(self.fav and self.fav.id)
+        inner = SettingsUI.letterTile(FavCategories.twoLetters(name), { size = side - 4 })
+    end
+    self.frame = FrameContainer:new{
+        bordersize = self.selected and Size.border.thick or Size.border.thin,
+        padding = pad,
+        margin = Size.margin.tiny,
+        background = Blitbuffer.COLOR_WHITE,
+        radius = Size.radius.default,
+        inner,
+    }
+    self[1] = self.frame
+    self.dimen = self.frame:getSize()
+    self.ges_events = {
+        TapChip = { GestureRange:new{ ges = "tap", range = self.dimen } },
+        HoldChip = { GestureRange:new{ ges = "hold", range = self.dimen } },
+    }
+end
+
+function CategoryChip:onTapChip()
+    if self.callback then self.callback() end
+    return true
+end
+
+function CategoryChip:onHoldChip()
+    if self.hold_callback then self.hold_callback() end
+    return true
+end
 
 function Home:init()
     self.dimen = Geom:new{
@@ -33,68 +93,163 @@ function Home:init()
     end
 end
 
-function Home:buildLayout()
+function Home:_buildHeader(width)
     local plugin = self.plugin
-    local width = self.dimen.w
-
-    -- Brand mark left (tap = sync). Compact TitleBar padding for e-ink density.
+    local icons = plugin.icons
     self.title_bar = TitleBar:new{
         width = width,
         fullscreen = true,
         align = "center",
         with_bottom_line = true,
         title = plugin:menuTitle(),
-        subtitle = plugin:menuSubtitle(),
-        title_face = Font:getFace("x_smalltfont"),
+        subtitle = nil,
         title_multilines = false,
-        title_top_padding = Size.padding.small,
-        title_subtitle_v_padding = Screen:scaleBySize(1),
-        bottom_v_padding = Size.padding.small,
-        left_icon = plugin.icons:name("freshrss"),
-        left_icon_size_ratio = 0.85,
+        title_shrink_font_to_fit = true,
+        left_icon = icons:name("freshrss"),
+        left_icon_size_ratio = 0.7,
+        left_icon_tap_callback = function() plugin:requestSync() end,
         left_icon_allow_flash = true,
-        left_icon_tap_callback = function()
-            plugin:requestSync()
-        end,
         close_callback = function() self:onClose() end,
         show_parent = self,
     }
+    return self.title_bar
+end
 
-    -- Icon-only action bar (KOReader Button is icon XOR text). Browse mode
-    -- stays visible in the title; icons keep the bar compact on e-ink.
+function Home:_actionChip(icon_key, callback)
+    local plugin = self.plugin
     local icons = plugin.icons
-    local action_icon_size = Screen:scaleBySize(22)
-    self.action_buttons = ButtonTable:new{
-        width = width,
-        buttons = {
-            {
-                icons:button("list_filter", {
-                    size = action_icon_size,
-                    callback = function() plugin:showBrowsePicker() end,
-                }),
-                icons:button("check_circle", {
-                    size = action_icon_size,
-                    callback = function() plugin:confirmMarkAllRead() end,
-                }),
-                icons:button("settings", {
-                    size = action_icon_size,
-                    callback = function() plugin:showSettingsMenu() end,
-                }),
-            },
-        },
-        zero_sep = true,
+    local btn = IconButton:new{
+        icon = icons:name(icon_key),
+        width = Screen:scaleBySize(26),
+        height = Screen:scaleBySize(26),
+        padding = Size.padding.tiny,
+        callback = callback,
+        allow_flash = true,
         show_parent = self,
     }
+    return FrameContainer:new{
+        bordersize = Size.border.thin,
+        padding = Size.padding.tiny,
+        margin = Size.margin.tiny,
+        background = Blitbuffer.COLOR_WHITE,
+        radius = Size.radius.default,
+        btn,
+    }
+end
 
-    local list_height = self.dimen.h
-        - self.title_bar:getHeight()
-        - self.action_buttons:getSize().h
+function Home:_buildFavoritesRow(width)
+    local plugin = self.plugin
+    local icons = plugin.icons
+    local browse = plugin:browseState()
+    local favs = FavCategories.read(plugin.settings)
+    local chips = HorizontalGroup:new{}
+    local function addChip(widget)
+        table.insert(chips, widget)
+        table.insert(chips, HorizontalSpan:new{ width = Size.span.horizontal_small })
+    end
+
+    -- Browse / Mark all / Settings live on the favorites row (not the TitleBar).
+    addChip(self:_actionChip("list_filter", function() plugin:showBrowsePicker() end))
+    addChip(self:_actionChip("check_circle", function() plugin:confirmMarkAllRead() end))
+    addChip(self:_actionChip("settings", function() plugin:showSettingsMenu() end))
+
+    local sep_h = Screen:scaleBySize(28)
+    table.insert(chips, LineWidget:new{
+        background = Blitbuffer.COLOR_DARK_GRAY,
+        dimen = Geom:new{ w = Size.line.medium, h = sep_h },
+    })
+    table.insert(chips, HorizontalSpan:new{ width = Size.span.horizontal_small })
+
+    -- All-articles chip (layout-list) before favorite categories.
+    local all_selected = browse.mode == "all"
+    addChip(FrameContainer:new{
+        bordersize = all_selected and Size.border.thick or Size.border.thin,
+        padding = Size.padding.tiny,
+        margin = Size.margin.tiny,
+        background = Blitbuffer.COLOR_WHITE,
+        radius = Size.radius.default,
+        IconButton:new{
+            icon = icons:name("layout_list"),
+            width = Screen:scaleBySize(26),
+            height = Screen:scaleBySize(26),
+            padding = Size.padding.tiny,
+            callback = function()
+                plugin:setBrowseState({ mode = "all" })
+                plugin:showCached(true)
+            end,
+            allow_flash = true,
+            show_parent = self,
+        },
+    })
+
+    for _, fav in ipairs(favs) do
+        local selected = browse.mode == "label" and browse.label == fav.id
+        addChip(CategoryChip:new{
+            fav = fav,
+            selected = selected,
+            icons = icons,
+            show_parent = self,
+            callback = function()
+                plugin:setBrowseState({ mode = "label", label = fav.id })
+                plugin:showCached(true)
+            end,
+            hold_callback = function()
+                plugin:showCategoryIconPicker(fav.id)
+            end,
+        })
+    end
+
+    local plus = IconButton:new{
+        icon = icons:name("plus"),
+        width = Screen:scaleBySize(26),
+        height = Screen:scaleBySize(26),
+        padding = Size.padding.tiny,
+        callback = function() plugin:showFavoriteCategoryPicker() end,
+        hold_callback = function() plugin:showFavoriteCategoryPicker() end,
+        allow_flash = true,
+        show_parent = self,
+    }
+    addChip(FrameContainer:new{
+        bordersize = Size.border.thin,
+        padding = Size.padding.tiny,
+        margin = Size.margin.tiny,
+        background = Blitbuffer.COLOR_WHITE,
+        radius = Size.radius.default,
+        plus,
+    })
+
+    self.favorites_row = FrameContainer:new{
+        bordersize = 0,
+        padding = Size.padding.small,
+        margin = 0,
+        background = Blitbuffer.COLOR_WHITE,
+        width = width,
+        VerticalGroup:new{
+            align = "left",
+            chips,
+            VerticalSpan:new{ width = Size.padding.tiny },
+            LineWidget:new{
+                background = Blitbuffer.COLOR_DARK_GRAY,
+                dimen = Geom:new{ w = width - Size.padding.small * 2, h = Size.line.thin },
+            },
+        },
+    }
+    return self.favorites_row
+end
+
+function Home:buildLayout()
+    local plugin = self.plugin
+    local width = self.dimen.w
+
+    local header = self:_buildHeader(width)
+    local fav_row = self:_buildFavoritesRow(width)
+
+    local chrome_h = header:getSize().h + fav_row:getSize().h
+    local list_height = self.dimen.h - chrome_h
     if list_height < Screen:scaleBySize(200) then
         list_height = Screen:scaleBySize(200)
     end
 
-    -- Nested Menu must not own Back / close: only Home TitleBar X (and Home Back) exits.
-    -- MenuItem always uses Font face "smallinfofont"; ListFonts remaps that + Gujarati fallback.
     if plugin.list_fonts then
         plugin.list_fonts.apply()
     end
@@ -109,11 +264,12 @@ function Home:buildLayout()
         is_borderless = true,
         width = width,
         height = list_height,
-        -- Single-line rows keep the list denser (Gujarati titles truncate instead of wrapping).
         multilines_show_more_text = false,
-        -- Hide Q/W/E… shortcut letter boxes (default when Device:hasKeyboard()).
+        multilines_forced = true,
+        single_line = false,
         is_enable_shortcut = false,
         items_font_size = list_font_size,
+        items_mandatory_font_size = math.max(12, list_font_size - 4),
         item_table = plugin:buildItemTable(),
         show_parent = self,
         close_callback = nil,
@@ -131,14 +287,13 @@ function Home:buildLayout()
         height = self.dimen.h,
         VerticalGroup:new{
             align = "left",
-            self.title_bar,
-            self.action_buttons,
+            header,
+            fav_row,
             self.list,
         },
     }
 end
 
--- Rebuild chrome after browse-mode / settings changes.
 function Home:reopen()
     local plugin = self.plugin
     UIManager:close(self)
@@ -184,6 +339,11 @@ function Home:onShow()
 end
 
 function Home:onClose()
+    -- Restore fonts before UIManager:close so CoverBrowser/FileManager never
+    -- paints with our remapped smallinfofont / injected fallback faces.
+    if self.plugin and self.plugin.list_fonts then
+        self.plugin.list_fonts.restore()
+    end
     if self.plugin then
         self.plugin:onHomeClosed()
     end
@@ -192,7 +352,6 @@ function Home:onClose()
 end
 
 function Home:onCloseWidget()
-    -- UIManager:close sends CloseWidget (not Close); restore Menu face remap here.
     if self.plugin and self.plugin.list_fonts then
         self.plugin.list_fonts.restore()
     end

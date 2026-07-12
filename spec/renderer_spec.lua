@@ -213,8 +213,8 @@ describe("FreshRSS renderer CSS / view settings", function()
     it("applies justify and body padding in CSS", function()
         local css = Renderer.buildCss({ justify = true, line_height = 1.45, show_images = false })
         assert.truthy(css:find("text%-align: justify"))
-        -- Defaults: 0.2 / 0.5 / 0.2 → padToPx → 2px / 5px / 2px (screen scale stub is identity)
-        assert.truthy(css:find("padding: 2px 5px 2px 5px", 1, true))
+        -- Defaults: 0 / 0.5 / 0 → padToPx → 0px / 5px / 0px (screen scale stub is identity)
+        assert.truthy(css:find("padding: 0px 5px 0px 5px", 1, true))
         assert.falsy(css:find("padding: %d+em"))
         assert.truthy(css:find("body > %*:first%-child"))
     end)
@@ -270,5 +270,26 @@ describe("FreshRSS renderer CSS / view settings", function()
         assert.falsy(out:find("^%s*<p>%s*</p>"))
         assert.truthy(out:find("Hello", 1, true))
         assert.truthy(out:match("^%s*<p>Hello</p>"))
+    end)
+
+    it("strips leading empty divs and inline top margin styles", function()
+        local html = [[<div></div><div style="margin-top: 40px; color: red"><p>Hi</p></div>]]
+        local out = Renderer.sanitizeHtml(html)
+        assert.falsy(out:find("<div></div>", 1, true))
+        assert.falsy(out:find("margin%-top"))
+        assert.truthy(out:find("Hi", 1, true))
+        assert.truthy(out:find("color: red", 1, true))
+    end)
+
+    it("defaults top and bottom pad to zero in CSS", function()
+        local css = Renderer.buildCss({
+            justify = false,
+            show_images = false,
+            line_height = 1.45,
+            pad_top = 0,
+            pad_side = 0.5,
+            pad_bottom = 0,
+        })
+        assert.truthy(css:find("padding: 0px 5px 0px 5px", 1, true))
     end)
 end)

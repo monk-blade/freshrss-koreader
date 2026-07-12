@@ -31,6 +31,7 @@ ListFonts.GUJARATI_HINTS = {
 local _session = {
     applied = false,
     saved_fontmap = nil,
+    latin_realname = nil,
     injected_fallback = nil,
     hint_shown = false,
 }
@@ -124,7 +125,15 @@ end
 ---Short label for settings rows.
 function ListFonts.displayName(path)
     if not path or path == "" then return "Default" end
-    return path:match("([^/\\]+)$") or path
+    local name = path:match("([^/\\]+)$") or path
+    name = name:gsub("%.%w+$", "") -- strip extension
+    name = name:gsub("%-?VariableFont[_%-]?[%w]*", "")
+    name = name:gsub("[_%-]+$", "")
+    name = name:gsub("[_%-]+", " ")
+    if name == "" then
+        name = path:match("([^/\\]+)$") or path
+    end
+    return name
 end
 
 ---Find first installed font matching hints (regular preferred).
@@ -195,7 +204,42 @@ end
 local function clearFaceFallbackCaches(Font)
     if not Font or not Font.faces then return end
     for _, face in pairs(Font.faces) do
-        face.fallbacks = nil
+        if face then face.fallbacks = nil end
+    end
+end
+
+---Drop Font.faces entries whose realname/hash matches remapped session fonts.
+---Stale FT sizes left in the global cache after remapping smallinfofont can
+---crash CoverBrowser (and other menus) with FreeType FT_Load_Glyph errors.
+local function evictSessionFaces(Font)
+    if not Font or not Font.faces then return end
+    local drop = {}
+    if _session.latin_realname then
+        drop[_session.latin_realname] = true
+    end
+    if _session.injected_fallback then
+        drop[_session.injected_fallback] = true
+    end
+    if not next(drop) then
+        clearFaceFallbackCaches(Font)
+        return
+    end
+    for hash, face in pairs(Font.faces) do
+        local realname = face and face.realname
+        local should_drop = realname and drop[realname]
+        if not should_drop and type(hash) == "string" then
+            for name in pairs(drop) do
+                if hash:sub(1, #name) == name then
+                    should_drop = true
+                    break
+                end
+            end
+        end
+        if should_drop then
+            Font.faces[hash] = nil
+        elseif face then
+            face.fallbacks = nil
+        end
     end
 end
 
@@ -207,6 +251,7 @@ function ListFonts.apply()
     end
 
     local latin = ListFonts.resolveLatinFont()
+    _session.latin_realname = latin
     if latin then
         Font.fontmap[ListFonts.MENU_FACE] = latin
     else
@@ -233,6 +278,7 @@ function ListFonts.apply()
 end
 
 ---Restore fontmap / fallbacks after home closes.
+---Must run before the underlying UI (e.g. CoverBrowser) paints again.
 function ListFonts.restore()
     if not _session.applied then return end
     local Font = require("ui/font")
@@ -241,10 +287,11 @@ function ListFonts.restore()
     end
     if _session.injected_fallback then
         removeFallback(Font.fallbacks, _session.injected_fallback)
-        clearFaceFallbackCaches(Font)
     end
+    evictSessionFaces(Font)
     _session.applied = false
     _session.saved_fontmap = nil
+    _session.latin_realname = nil
     _session.injected_fallback = nil
     _session.hint_shown = false
 end
@@ -253,6 +300,7 @@ end
 function ListFonts._resetSessionForTests()
     _session.applied = false
     _session.saved_fontmap = nil
+    _session.latin_realname = nil
     _session.injected_fallback = nil
     _session.hint_shown = false
 end

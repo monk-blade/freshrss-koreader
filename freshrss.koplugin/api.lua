@@ -99,8 +99,28 @@ end
 
 function API:encodeFields(fields)
     local parts = {}
-    for key, value in pairs(fields) do table.insert(parts, tostring(key) .. "=" .. url.escape(tostring(value))) end
+    for key, value in pairs(fields) do
+        if type(value) == "table" then
+            for _, entry in ipairs(value) do
+                table.insert(parts, tostring(key) .. "=" .. url.escape(tostring(entry)))
+            end
+        else
+            table.insert(parts, tostring(key) .. "=" .. url.escape(tostring(value)))
+        end
+    end
     return table.concat(parts, "&")
+end
+
+---Normalize itemRefs decimal ids to the tag:google.com item id form.
+function API.normalizeItemId(id)
+    id = tostring(id or "")
+    if id == "" then return id end
+    if id:find("tag:google.com", 1, true) then return id end
+    local n = tonumber(id)
+    if n then
+        return string.format("tag:google.com,2005:reader/item/%016x", n)
+    end
+    return id
 end
 
 function API:login()
@@ -153,12 +173,56 @@ function API:buildStreamPath(stream_id, opts)
     return "reader/api/0/stream/contents/" .. sid .. "?" .. table.concat(parts, "&")
 end
 
+function API:buildStreamIdsPath(stream_id, opts)
+    opts = opts or {}
+    local sid = stream_id or "user/-/state/com.google/reading-list"
+    local parts = {
+        "output=json",
+        "n=" .. tostring(opts.n or 100),
+        "s=" .. url.escape(tostring(sid)),
+    }
+    if opts.continuation and tostring(opts.continuation) ~= "" then
+        table.insert(parts, "c=" .. url.escape(tostring(opts.continuation)))
+    end
+    if opts.exclude_read then
+        table.insert(parts, "xt=" .. url.escape("user/-/state/com.google/read"))
+    end
+    return "reader/api/0/stream/items/ids?" .. table.concat(parts, "&")
+end
+
 function API:stream(stream_id, opts)
     if type(opts) == "number" then
         -- Back-compat: stream(id, count)
         opts = { n = opts }
     end
     return self:request(self:buildStreamPath(stream_id, opts))
+end
+
+function API:streamItemIds(stream_id, opts)
+    local data, err = self:request(self:buildStreamIdsPath(stream_id, opts))
+    if not data then return nil, err end
+    local ids = {}
+    for _, ref in ipairs(data.itemRefs or {}) do
+        local raw = type(ref) == "table" and (ref.id or ref) or ref
+        local id = API.normalizeItemId(raw)
+        if id ~= "" then table.insert(ids, id) end
+    end
+    return {
+        ids = ids,
+        continuation = data.continuation,
+        itemRefs = data.itemRefs,
+    }
+end
+
+---Fetch full item payloads for a list of ids (batched POST).
+function API:streamItemContents(item_ids)
+    local ids = {}
+    for _, id in ipairs(item_ids or {}) do
+        local normalized = API.normalizeItemId(id)
+        if normalized ~= "" then table.insert(ids, normalized) end
+    end
+    if #ids == 0 then return { items = {} } end
+    return self:request("reader/api/0/stream/items/contents?output=json", "POST", { i = ids })
 end
 
 function API:ensureToken()
@@ -169,10 +233,24 @@ function API:ensureToken()
 end
 
 function API:editTag(item_id, action, state)
+    return self:editTagMany({ item_id }, action, state)
+end
+
+function API:editTagMany(item_ids, action, state)
     self:ensureToken()
     local tag = "user/-/state/com.google/" .. action
     local field = state and "a" or "r"
-    local text, code = self:requestRaw("reader/api/0/edit-tag", "POST", { i = item_id, [field] = tag, T = self.token or "" })
+    local ids = {}
+    for _, id in ipairs(item_ids or {}) do
+        local normalized = API.normalizeItemId(id)
+        if normalized ~= "" then table.insert(ids, normalized) end
+    end
+    if #ids == 0 then return true end
+    local text, code = self:requestRaw("reader/api/0/edit-tag", "POST", {
+        i = ids,
+        [field] = tag,
+        T = self.token or "",
+    })
     if not text or code >= 400 then return false, "HTTP request failed (" .. tostring(code) .. ")" end
     return true
 end
@@ -190,5 +268,8 @@ function API:markAllAsRead(stream_id, ts)
     if not text or code >= 400 then return false, "HTTP request failed (" .. tostring(code) .. ")" end
     return true
 end
+
+API.EDIT_TAG_BATCH = 40
+API.CONTENTS_BATCH = 40
 
 return API

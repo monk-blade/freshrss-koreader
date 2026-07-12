@@ -24,6 +24,8 @@ local Home = dofile(plugin_dir .. "/home.lua")
 local Nav = dofile(plugin_dir .. "/nav.lua")
 local ListFonts = dofile(plugin_dir .. "/list_fonts.lua")
 local ListFormat = dofile(plugin_dir .. "/list_format.lua")
+local FavCategories = dofile(plugin_dir .. "/fav_categories.lua")
+local SettingsUI = dofile(plugin_dir .. "/settings_ui.lua")
 
 local Plugin = WidgetContainer:extend{
     name = "freshrss",
@@ -575,14 +577,10 @@ function Plugin:buildItemTable()
 
     local items = self:listedArticles()
     -- Dense e-ink glyphs: filled bullet = unread, hollow = read, star = favorite.
-    local unread_mark = "● "
-    local read_mark = "○ "
+    -- Line 1: markers + title; line 2: feed · time (Menu multilines_forced).
     for _, article in ipairs(items) do
-        local marker = article.unread and unread_mark or read_mark
-        local star = article.starred and "★ " or ""
         table.insert(entries, {
-            text = marker .. star .. articleTitle(article),
-            mandatory = ListFormat.rowMandatory(article),
+            text = ListFormat.rowText(article, { title = articleTitle(article) }),
             article_id = article.id,
             callback = function() self:openArticle(article.id) end,
         })
@@ -655,6 +653,7 @@ function Plugin:showBrowsePicker()
         is_popout = false,
         is_borderless = true,
         covers_fullscreen = true,
+        is_enable_shortcut = false,
         close_callback = function()
             self.browse_picker = nil
         end,
@@ -736,6 +735,7 @@ function Plugin:showListFontPicker(kind)
         is_popout = false,
         is_borderless = true,
         covers_fullscreen = true,
+        is_enable_shortcut = false,
         close_callback = function()
             self.list_font_menu = nil
             if self.appearance_menu then
@@ -756,25 +756,150 @@ function Plugin:closeSettingsSubmenu(menu_key)
     self:showSettingsMenu()
 end
 
-function Plugin:showSettingsSubmenu(menu_key, title, entries)
-    if self[menu_key] then
-        self[menu_key]:switchItemTable(title, entries)
-        return
+---Convert legacy {text, callback} Menu rows into SettingsUI icon rows.
+function Plugin:settingsRowsFromEntries(entries, default_icon)
+    local rows = {}
+    for _, entry in ipairs(entries or {}) do
+        if entry.select_enabled == false and not entry.callback then
+            table.insert(rows, {
+                icon = self.icons:name(entry.icon or default_icon or "circle"),
+                text = entry.text,
+                callback = function() end,
+            })
+        else
+            table.insert(rows, {
+                icon = self.icons:name(entry.icon or default_icon or "settings"),
+                text = entry.text,
+                callback = entry.callback,
+                hold_callback = entry.hold_callback,
+            })
+        end
     end
-    self[menu_key] = Menu:new{
+    return rows
+end
+
+function Plugin:showSettingsSubmenu(menu_key, title, entries, default_icon)
+    if self[menu_key] then
+        UIManager:close(self[menu_key])
+        self[menu_key] = nil
+    end
+    local panel
+    panel = SettingsUI.showPanel({
         title = title,
-        item_table = entries,
-        is_popout = false,
-        is_borderless = true,
-        covers_fullscreen = true,
-        close_callback = function()
-            self[menu_key] = nil
-            if self.settings_menu then
-                self:showSettingsMenu()
-            end
+        icons = self.icons,
+        rows = self:settingsRowsFromEntries(entries, default_icon),
+        on_close = function()
+            if self[menu_key] == panel then self[menu_key] = nil end
+            self:showSettingsMenu()
         end,
+    })
+    self[menu_key] = panel
+end
+
+function Plugin:showFavoriteCategoryPicker()
+    local labels = FavCategories.availableLabels(self.cache)
+    local rows = {}
+    if #labels == 0 then
+        table.insert(rows, {
+            icon = self.icons:name("inbox"),
+            text = "No categories cached · sync first",
+            callback = function() end,
+        })
+    else
+        for _, id in ipairs(labels) do
+            local name = FavCategories.labelDisplayName(id)
+            local fav = FavCategories.isFavorite(self.settings, id)
+            table.insert(rows, {
+                icon = self.icons:name(fav and "star_filled" or "star"),
+                text = (fav and "★ " or "") .. name,
+                callback = function()
+                    if fav then
+                        FavCategories.remove(self.settings, id)
+                        Notification:notify("Removed favorite category", Notification.SOURCE_ALWAYS_SHOW)
+                    else
+                        FavCategories.add(self.settings, id)
+                        Notification:notify("Added favorite category", Notification.SOURCE_ALWAYS_SHOW)
+                    end
+                    if self.fav_cat_panel then
+                        UIManager:close(self.fav_cat_panel)
+                        self.fav_cat_panel = nil
+                    end
+                    if self.home then
+                        self:showCached(true)
+                    end
+                end,
+                hold_callback = function()
+                    if not FavCategories.isFavorite(self.settings, id) then
+                        FavCategories.add(self.settings, id)
+                    end
+                    self:showCategoryIconPicker(id)
+                end,
+            })
+        end
+    end
+    if self.fav_cat_panel then
+        UIManager:close(self.fav_cat_panel)
+        self.fav_cat_panel = nil
+    end
+    self.fav_cat_panel = SettingsUI.showPanel({
+        title = "Favorite categories",
+        icons = self.icons,
+        rows = rows,
+        on_close = function()
+            self.fav_cat_panel = nil
+            if self.home then self:showCached(true) end
+        end,
+    })
+end
+
+function Plugin:showCategoryIconPicker(label_id)
+    label_id = tostring(label_id or "")
+    if label_id == "" then return end
+    local name = FavCategories.labelDisplayName(label_id)
+    local rows = {
+        {
+            icon = nil,
+            letters = FavCategories.twoLetters(name),
+            text = "Letters (default)",
+            callback = function()
+                FavCategories.setIcon(self.settings, label_id, nil)
+                if self.cat_icon_panel then
+                    UIManager:close(self.cat_icon_panel)
+                    self.cat_icon_panel = nil
+                end
+                if self.home then self:showCached(true) end
+            end,
+        },
     }
-    UIManager:show(self[menu_key], "ui")
+    for _, key in ipairs(FavCategories.ICON_PALETTE) do
+        if self.icons:has(key) then
+            local icon_key = key
+            table.insert(rows, {
+                icon = self.icons:name(icon_key),
+                text = icon_key:gsub("_", " "),
+                callback = function()
+                    FavCategories.setIcon(self.settings, label_id, icon_key)
+                    if self.cat_icon_panel then
+                        UIManager:close(self.cat_icon_panel)
+                        self.cat_icon_panel = nil
+                    end
+                    if self.home then self:showCached(true) end
+                end,
+            })
+        end
+    end
+    if self.cat_icon_panel then
+        UIManager:close(self.cat_icon_panel)
+        self.cat_icon_panel = nil
+    end
+    self.cat_icon_panel = SettingsUI.showPanel({
+        title = "Icon · " .. name,
+        icons = self.icons,
+        rows = rows,
+        on_close = function()
+            self.cat_icon_panel = nil
+        end,
+    })
 end
 
 function Plugin:showConnectionSettings()
@@ -782,10 +907,12 @@ function Plugin:showConnectionSettings()
     local mark_on_open = self:markReadOnOpen()
     self:showSettingsSubmenu("connection_menu", "Connection", {
         {
+            icon = "plug",
             text = "API connection…",
             callback = function() self:showSetup() end,
         },
         {
+            icon = "refresh",
             text = auto and "Auto-refresh on open: on" or "Auto-refresh on open: off",
             callback = function()
                 self.settings:saveSetting("freshrss_auto_refresh", not auto)
@@ -794,6 +921,7 @@ function Plugin:showConnectionSettings()
             end,
         },
         {
+            icon = "check_circle",
             text = mark_on_open and "Mark read on open: on" or "Mark read on open: off",
             callback = function()
                 self.settings:saveSetting("freshrss_mark_read_on_open", not mark_on_open)
@@ -801,7 +929,7 @@ function Plugin:showConnectionSettings()
                 self:showConnectionSettings()
             end,
         },
-    })
+    }, "plug")
 end
 
 function Plugin:showSyncSettings()
@@ -809,6 +937,7 @@ function Plugin:showSyncSettings()
     local sort = Cache.readListSort(self.settings)
     self:showSettingsSubmenu("sync_menu", "Sync", {
         {
+            icon = "list_filter",
             text = unread_only and "Sync filter: unread only" or "Sync filter: all articles",
             callback = function()
                 self.settings:saveSetting("freshrss_sync_unread_only", not unread_only)
@@ -817,6 +946,7 @@ function Plugin:showSyncSettings()
             end,
         },
         {
+            icon = "refresh",
             text = self:syncScopeLabel(),
             callback = function()
                 Sync.cycleSyncScope(self.settings)
@@ -824,6 +954,7 @@ function Plugin:showSyncSettings()
             end,
         },
         {
+            icon = "inbox",
             text = "Articles per sync: " .. tostring(self:articlesPerSync()),
             callback = function()
                 self:cycleArticlesPerSync()
@@ -831,6 +962,7 @@ function Plugin:showSyncSettings()
             end,
         },
         {
+            icon = "move_vertical",
             text = sort == Cache.SORT_OLDEST and "List sort: oldest first" or "List sort: newest first",
             callback = function()
                 Cache.cycleListSort(self.settings)
@@ -838,13 +970,14 @@ function Plugin:showSyncSettings()
                 self:showSyncSettings()
             end,
         },
-    })
+    }, "refresh")
 end
 
 function Plugin:showCacheSettings()
     local cache_size = Cache.formatSize(self.cache:approxSizeBytes())
     self:showSettingsSubmenu("cache_menu", "Cache", {
         {
+            icon = "database",
             text = "Cache retain articles: " .. tostring(Cache.readMaxRetained(self.settings)),
             callback = function()
                 Cache.cycleMaxRetained(self.settings)
@@ -852,10 +985,12 @@ function Plugin:showCacheSettings()
             end,
         },
         {
+            icon = "database",
             text = "Cache size ≈ " .. cache_size,
             select_enabled = false,
         },
         {
+            icon = "database",
             text = "Clean cache now…",
             callback = function()
                 UIManager:show(ConfirmBox:new{
@@ -868,7 +1003,7 @@ function Plugin:showCacheSettings()
                 })
             end,
         },
-    })
+    }, "database")
 end
 
 function Plugin:showAppearanceSettings()
@@ -877,14 +1012,17 @@ function Plugin:showAppearanceSettings()
     end)
     self:showSettingsSubmenu("appearance_menu", "Appearance", {
         {
+            icon = "type",
             text = self:listFontLabel("latin"),
             callback = function() self:showListFontPicker("latin") end,
         },
         {
+            icon = "type",
             text = self:listFontLabel("gujarati"),
             callback = function() self:showListFontPicker("gujarati") end,
         },
         {
+            icon = "a_large_small",
             text = "List font size: " .. tostring(ListFonts.readFontSize()),
             callback = function()
                 UIManager:show(SpinWidget:new{
@@ -904,6 +1042,12 @@ function Plugin:showAppearanceSettings()
             end,
         },
         {
+            icon = "star",
+            text = "Favorite categories…",
+            callback = function() self:showFavoriteCategoryPicker() end,
+        },
+        {
+            icon = "a_large_small",
             text = "Viewer font size: " .. tostring(Renderer.readFontSize()),
             callback = function()
                 UIManager:show(SpinWidget:new{
@@ -922,6 +1066,7 @@ function Plugin:showAppearanceSettings()
             end,
         },
         {
+            icon = "heading",
             text = "Title font size: " .. tostring(Renderer.readTitleFontSize()),
             callback = function()
                 UIManager:show(SpinWidget:new{
@@ -940,6 +1085,7 @@ function Plugin:showAppearanceSettings()
             end,
         },
         {
+            icon = "move_vertical",
             text = "Viewer line height: " .. Renderer.formatLineHeight(Renderer.readLineHeight()),
             callback = function()
                 Renderer.showSpacingSpin({
@@ -959,6 +1105,7 @@ function Plugin:showAppearanceSettings()
             end,
         },
         {
+            icon = "square",
             text = "Viewer side padding: " .. Renderer.formatPad(Renderer.readPadSide()),
             callback = function()
                 Renderer.showSpacingSpin({
@@ -978,6 +1125,7 @@ function Plugin:showAppearanceSettings()
             end,
         },
         {
+            icon = "panel_left",
             text = "Viewer top margin: " .. Renderer.formatPad(Renderer.readPadTop()),
             callback = function()
                 Renderer.showSpacingSpin({
@@ -997,6 +1145,7 @@ function Plugin:showAppearanceSettings()
             end,
         },
         {
+            icon = "panel_left",
             text = "Viewer bottom margin: " .. Renderer.formatPad(Renderer.readPadBottom()),
             callback = function()
                 Renderer.showSpacingSpin({
@@ -1015,12 +1164,13 @@ function Plugin:showAppearanceSettings()
                 })
             end,
         },
-    })
+    }, "type")
 end
 
 function Plugin:showImageSettings()
     self:showSettingsSubmenu("images_menu", "Images", {
         {
+            icon = "image",
             text = "Images per article: " .. tostring(Images.readMaxImages()),
             callback = function()
                 Images.cycleMaxImages()
@@ -1028,6 +1178,7 @@ function Plugin:showImageSettings()
             end,
         },
         {
+            icon = "image",
             text = "Sync image budget: " .. tostring(Images.readSyncBudget()),
             callback = function()
                 Images.cycleSyncBudget()
@@ -1035,6 +1186,7 @@ function Plugin:showImageSettings()
             end,
         },
         {
+            icon = "image",
             text = "Image download parallel: " .. tostring(Images.readMaxParallel()),
             callback = function()
                 Images.cycleMaxParallel()
@@ -1042,6 +1194,7 @@ function Plugin:showImageSettings()
             end,
         },
         {
+            icon = "image",
             text = "Image max size: " .. Images.formatMaxBytesLabel(Images.readMaxBytes()),
             callback = function()
                 Images.cycleMaxBytes()
@@ -1049,54 +1202,59 @@ function Plugin:showImageSettings()
             end,
         },
         {
+            icon = "image",
             text = "Image timeouts: " .. Images.readTimeoutProfile(),
             callback = function()
                 Images.cycleTimeoutProfile()
                 self:showImageSettings()
             end,
         },
-    })
+    }, "image")
 end
 
 function Plugin:showSettingsMenu()
     local pending = #self.cache:queuedActions()
-    local entries = {
+    local rows = {
         {
+            icon = self.icons:name("plug"),
             text = "Connection…",
             callback = function() self:showConnectionSettings() end,
         },
         {
+            icon = self.icons:name("refresh"),
             text = "Sync…",
             callback = function() self:showSyncSettings() end,
         },
         {
+            icon = self.icons:name("database"),
             text = "Cache…",
             callback = function() self:showCacheSettings() end,
         },
         {
+            icon = self.icons:name("type"),
             text = "Appearance…",
             callback = function() self:showAppearanceSettings() end,
         },
         {
+            icon = self.icons:name("image"),
             text = "Images…",
             callback = function() self:showImageSettings() end,
         },
         {
+            icon = self.icons:name("inbox"),
             text = string.format("Queue… (%d pending)", pending),
             callback = function() self:showQueueMenu() end,
         },
     }
     if self.settings_menu then
-        self.settings_menu:switchItemTable("FreshRSS settings", entries)
-        return
+        UIManager:close(self.settings_menu)
+        self.settings_menu = nil
     end
-    self.settings_menu = Menu:new{
+    self.settings_menu = SettingsUI.showPanel({
         title = "FreshRSS settings",
-        item_table = entries,
-        is_popout = false,
-        is_borderless = true,
-        covers_fullscreen = true,
-        close_callback = function()
+        icons = self.icons,
+        rows = rows,
+        on_close = function()
             self.settings_menu = nil
             self.connection_menu = nil
             self.sync_menu = nil
@@ -1108,10 +1266,8 @@ function Plugin:showSettingsMenu()
                 self:showCached()
             end
         end,
-    }
-    UIManager:show(self.settings_menu, "ui")
+    })
 end
-
 function Plugin:showQueueMenu()
     local queue = self.cache:queuedActions()
     local entries = {
@@ -1169,6 +1325,7 @@ function Plugin:showQueueMenu()
         is_popout = false,
         is_borderless = true,
         covers_fullscreen = true,
+        is_enable_shortcut = false,
         close_callback = function()
             self.queue_menu = nil
             if self.settings_menu then self:showSettingsMenu() end
@@ -1210,7 +1367,7 @@ function Plugin:confirmMarkAllRead()
 end
 
 function Plugin:menuTitle()
-    -- Brand lives in the TitleBar icon; title is mode + unread count only.
+    -- Single line: mode · unread · last sync (subtitle unused).
     local browse = self:browseState()
     local mode = MODE_LABELS[browse.mode] or "FreshRSS"
     if browse.mode == "feed" and browse.feed_id then
@@ -1218,11 +1375,16 @@ function Plugin:menuTitle()
     elseif browse.mode == "label" and browse.label then
         mode = labelDisplayName(browse.label)
     end
-    return mode .. "  ·  " .. tostring(self.cache:unreadCount())
+    local count = tostring(self.cache:unreadCount())
+    local sync = self:menuSubtitle()
+    if sync and sync ~= "" then
+        return mode .. "  ·  " .. count .. "  ·  " .. sync
+    end
+    return mode .. "  ·  " .. count
 end
 
 function Plugin:menuSubtitle()
-    -- Sync filter / cap live in Settings; keep only a short last-sync clock.
+    -- Kept for callers; primary chrome merges this into menuTitle().
     local last = self.settings:readSetting("freshrss_last_sync") or self.settings:readSetting("last_sync")
     local pending = #self.cache:queuedActions()
     local pending_bit = pending > 0 and string.format(" · queue %d", pending) or ""
@@ -1239,6 +1401,9 @@ function Plugin:menuSubtitle()
 end
 
 function Plugin:onHomeClosed()
+    if self.list_fonts then
+        self.list_fonts.restore()
+    end
     Status:close()
     self.home = nil
     self.menu = nil
@@ -1257,7 +1422,9 @@ function Plugin:showCached(rebuild_chrome)
     if self.home and not rebuild_chrome then
         if self.home.title_bar then
             self.home.title_bar:setTitle(self:menuTitle())
-            self.home.title_bar:setSubTitle(self:menuSubtitle())
+            if self.home.title_bar.setSubTitle then
+                self.home.title_bar:setSubTitle("")
+            end
         end
         self.home:updateList()
         return
@@ -1279,7 +1446,9 @@ function Plugin:refreshHomeAfterViewer()
     end
     if self.home.title_bar then
         self.home.title_bar:setTitle(self:menuTitle())
-        self.home.title_bar:setSubTitle(self:menuSubtitle())
+        if self.home.title_bar.setSubTitle then
+            self.home.title_bar:setSubTitle("")
+        end
     end
     self.home:updateList()
     UIManager:setDirty(self.home, "ui")

@@ -86,7 +86,11 @@ describe("FreshRSS state synchronization", function()
             listSubscriptions = function() return {} end,
             listTags = function() return {} end,
             unreadCount = function() return {} end,
-            stream = function()
+            streamItemIds = function()
+                return { ids = { "tag:google.com,2005:reader/item/1" } }
+            end,
+            streamItemContents = function(_, ids)
+                assert.same({ "tag:google.com,2005:reader/item/1" }, ids)
                 return {
                     items = {
                         {
@@ -127,7 +131,8 @@ describe("FreshRSS state synchronization", function()
             listSubscriptions = function() return {} end,
             listTags = function() return {} end,
             unreadCount = function() return {} end,
-            stream = function() return { items = {} } end,
+            streamItemIds = function() return { ids = {} } end,
+            streamItemContents = function() return { items = {} } end,
         }
         local ok = sync:refresh(api, nil, function(stage, ratio)
             table.insert(stages, stage)
@@ -173,6 +178,18 @@ describe("FreshRSS state synchronization", function()
                 table.insert(order, "editTag")
                 return true
             end,
+            editTagMany = function()
+                table.insert(order, "editTagMany")
+                return true
+            end,
+            streamItemIds = function()
+                table.insert(order, "streamItemIds")
+                return { ids = {} }
+            end,
+            streamItemContents = function()
+                table.insert(order, "streamItemContents")
+                return { items = {} }
+            end,
             stream = function()
                 table.insert(order, "stream")
                 return { items = {} }
@@ -181,17 +198,23 @@ describe("FreshRSS state synchronization", function()
         local ok, result = sync:refresh(api)
         assert.is_true(ok)
         assert.equals("dequeue", order[1])
-        assert.equals("editTag", order[2])
-        assert.equals("stream", order[3])
+        assert.equals("editTagMany", order[2])
+        assert.equals("streamItemIds", order[3])
         assert.equals(1, result.flushed)
         assert.equals(0, result.flush_failed)
     end)
 
-    it("paginates stream results using continuation until the article cap", function()
+    it("paginates stream ids and fetches contents only for cache misses", function()
         local stored = 0
-        local calls = {}
+        local id_calls = {}
+        local content_calls = {}
+        -- Pre-seed cache for ids 1..30 so only 31..50 are fetched.
+        local articles = {}
+        for i = 1, 30 do
+            articles[tostring(i)] = { id = tostring(i), html = "cached" }
+        end
         local cache = {
-            getArticle = function() return nil end,
+            getArticle = function(_, id) return articles[tostring(id)] end,
             putArticle = function() stored = stored + 1 end,
             queuedActions = function() return {} end,
         }
@@ -206,36 +229,77 @@ describe("FreshRSS state synchronization", function()
         }
         local sync = Sync:new(cache, settings)
         local page = 0
-        local function makeItems(start_id, count)
-            local items = {}
-            for i = 1, count do
-                table.insert(items, { id = tostring(start_id + i - 1), title = "A" .. i, categories = {} })
-            end
-            return items
-        end
         local api = {
             login = function() return true end,
             listSubscriptions = function() return {} end,
             listTags = function() return {} end,
             unreadCount = function() return {} end,
-            stream = function(_, stream_id, opts)
+            streamItemIds = function(_, stream_id, opts)
                 page = page + 1
-                table.insert(calls, opts)
+                table.insert(id_calls, opts)
+                local ids = {}
                 if page == 1 then
-                    return { continuation = "cont-2", items = makeItems(1, 30) }
+                    for i = 1, 30 do table.insert(ids, tostring(i)) end
+                    return { continuation = "cont-2", ids = ids }
                 end
-                return { items = makeItems(31, 30) }
+                for i = 31, 50 do table.insert(ids, tostring(i)) end
+                return { ids = ids }
+            end,
+            streamItemContents = function(_, ids)
+                table.insert(content_calls, ids)
+                local items = {}
+                for _, id in ipairs(ids) do
+                    table.insert(items, { id = id, title = "A" .. id, categories = {} })
+                end
+                return { items = items }
             end,
         }
         local ok, result = sync:refresh(api)
         assert.is_true(ok)
-        assert.equals(50, stored)
-        assert.equals(50, result.fetched)
+        assert.equals(20, stored)
+        assert.equals(20, result.fetched)
         assert.is_true(result.exclude_read)
-        assert.equals(2, #calls)
-        assert.is_true(calls[1].exclude_read)
-        assert.equals("cont-2", calls[2].continuation)
-        assert.equals(20, calls[2].n)
+        assert.equals(2, #id_calls)
+        assert.is_true(id_calls[1].exclude_read)
+        assert.equals("cont-2", id_calls[2].continuation)
+        assert.equals(20, id_calls[2].n)
+        assert.equals(1, #content_calls)
+        assert.equals(20, #content_calls[1])
+    end)
+
+    it("batches queue flush by action and state", function()
+        local queue = {
+            { id = "1", action = "read", state = true },
+            { id = "2", action = "read", state = true },
+            { id = "3", action = "starred", state = true },
+            { id = "4", action = "read", state = false },
+        }
+        local batches = {}
+        local cache = {
+            queuedActions = function() return queue end,
+            dequeue = function() return table.remove(queue, 1) end,
+            queue = function(_, action) table.insert(queue, action) end,
+        }
+        local sync = Sync:new(cache, {})
+        local api = {
+            login = function() return true end,
+            editTagMany = function(_, ids, action, state)
+                table.insert(batches, { ids = ids, action = action, state = state })
+                return true
+            end,
+            invalidateSession = function() end,
+        }
+        local stats = sync:flushQueue(api)
+        assert.equals(4, stats.flushed)
+        assert.equals(0, stats.failed)
+        assert.equals(3, #batches)
+        assert.same({ "1", "2" }, batches[1].ids)
+        assert.equals("read", batches[1].action)
+        assert.is_true(batches[1].state)
+        assert.same({ "3" }, batches[2].ids)
+        assert.equals("starred", batches[2].action)
+        assert.same({ "4" }, batches[3].ids)
+        assert.is_false(batches[3].state)
     end)
 
     it("defaults to unread-only sync when the setting is unset", function()
