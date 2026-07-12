@@ -7,6 +7,7 @@ local DEFAULT_ARTICLE_CAP = 100
 local MIN_ARTICLE_CAP = 20
 local MAX_ARTICLE_CAP = 500
 local PAGE_SIZE = 100
+local MAX_SYNC_IMAGES = 50
 
 local function hasCategory(categories, state_id)
     if type(categories) ~= "table" then return false end
@@ -151,6 +152,42 @@ function Sync:storeStreamItems(items)
     return stored
 end
 
+---Prefetch article images during sync (capped globally).
+function Sync:prefetchImages(items, on_progress)
+    local Images = self.images
+    if not Images then return { downloaded = 0 } end
+    local show_images = self.settings:readSetting("freshrss_viewer_show_images")
+    if show_images == false then return { downloaded = 0 } end
+
+    local data_dir = self.cache and self.cache.root or ""
+    if data_dir == "" then return { downloaded = 0 } end
+    local dir = Images.ensureDirectory(Images.directory(data_dir))
+    local total_downloaded = 0
+    local n_items = #items
+
+    for i, raw in ipairs(items) do
+        if total_downloaded >= MAX_SYNC_IMAGES then break end
+        local html = raw.summary and raw.summary.content or raw.content and raw.content.content or ""
+        if html ~= "" then
+            for _, url in ipairs(Images.extractImageUrls(html)) do
+                if total_downloaded >= MAX_SYNC_IMAGES then break end
+                local norm = Images.normalizeUrl(url)
+                if not Images.findCachedFilename(dir, norm) then
+                    local filename = Images.filenameForUrl(norm)
+                    if Images.downloadOne(norm, dir, filename) then
+                        total_downloaded = total_downloaded + 1
+                    end
+                end
+            end
+        end
+        if n_items > 0 and i % 5 == 0 then
+            report(on_progress, "images", 0.92 + 0.06 * (i / n_items))
+        end
+    end
+    report(on_progress, "images", 0.98)
+    return { downloaded = total_downloaded }
+end
+
 function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
     report(on_progress, "meta", 0.40)
     local subscriptions = api:listSubscriptions()
@@ -171,6 +208,8 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
 
     report(on_progress, "cache", 0.90)
     local stored = self:storeStreamItems(items)
+    report(on_progress, "images", 0.92)
+    local img_stats = self:prefetchImages(items, on_progress)
     self.settings:saveSetting("freshrss_last_sync", os.time())
     self.settings:saveSetting("last_sync", os.time())
     self.settings:flush()
@@ -186,6 +225,7 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
         stream_id = opts.stream_id,
         flushed = flush_stats.flushed,
         flush_failed = flush_stats.failed,
+        images_downloaded = img_stats and img_stats.downloaded or 0,
     }
 end
 
@@ -271,6 +311,7 @@ Sync._hasCategory = hasCategory
 Sync._labelsFromCategories = labelsFromCategories
 Sync.DEFAULT_ARTICLE_CAP = DEFAULT_ARTICLE_CAP
 Sync.ARTICLE_CAPS = { 50, 100, 200, 300 }
+Sync.MAX_SYNC_IMAGES = MAX_SYNC_IMAGES
 Sync.READING_LIST = "user/-/state/com.google/reading-list"
 Sync.STARRED = "user/-/state/com.google/starred"
 

@@ -14,7 +14,7 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 - Configurable articles-per-sync cap (50 / 100 / 200 / 300) with continuation paging
 - Mark all as read for the current browse stream
 - HTML article viewer with **View settings** (☰: font size/face, line height, show images, open original link)
-- Local image download into the cache (MuPDF never fetches remote URLs); viewer opens first, then rebuilds when images arrive
+- Local image download into the cache (MuPDF never fetches remote URLs); images prefetch during sync (up to 50 per sync) and rewrite to relative filenames loaded via MuPDF’s `html_resource_directory` (v0.4.2 fixes broken `file://` rewrites)
 - Favorite / Mark unread with live button state and sync or “queued offline” notifications
 - Pending-action queue UI (list / flush / clear) with sync summary toast
 - Dispatcher actions: `freshrss_sync`, `freshrss_flush_queue`, `freshrss_open`

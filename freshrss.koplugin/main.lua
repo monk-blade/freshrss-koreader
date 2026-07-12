@@ -31,6 +31,7 @@ local STAGE_LABELS = {
     meta = "Loading feeds…",
     stream = "Fetching articles…",
     cache = "Updating cache…",
+    images = "Prefetching images…",
     done = "Done",
 }
 
@@ -63,6 +64,7 @@ function Plugin:init()
     self.settings = G_reader_settings
     self.cache = Cache:new(DataStorage:getDataDir() .. "/freshrss")
     self.sync = Sync:new(self.cache, self.settings)
+    self.sync.images = Images
     self.icons = Icons:new(plugin_dir)
     self.icons:install()
     Status:setIcons(self.icons)
@@ -752,36 +754,47 @@ function Plugin:loadViewerImages(article, viewer)
     local urls = Images.extractImageUrls(raw)
     if #urls == 0 then return end
     local data_dir = self.cache.root
+    local img_dir = Images.ensureDirectory(Images.directory(data_dir))
     local cached_map = select(1, Images.cachedMap(raw, data_dir))
     local need_download = false
     for _, url in ipairs(urls) do
-        if not cached_map[url] then
+        local norm = Images.normalizeUrl(url)
+        if not cached_map[norm] then
             need_download = true
             break
         end
     end
+    local function mapAlreadyApplied()
+        local existing = viewer.image_map
+        return existing and next(existing) ~= nil
+    end
     if not need_download then
-        if next(cached_map) then
-            viewer:applyImageMap(cached_map, Images.directory(data_dir))
+        -- openArticle already painted with cached_map; skip reinit unless first paint was empty.
+        if next(cached_map) and not mapAlreadyApplied() then
+            viewer:applyImageMap(cached_map, img_dir)
         end
         return
     end
     if not NetworkMgr:isOnline() then
-        if next(cached_map) then
-            viewer:applyImageMap(cached_map, Images.directory(data_dir))
+        if next(cached_map) and not mapAlreadyApplied() then
+            viewer:applyImageMap(cached_map, img_dir)
         end
         return
     end
-    Status:show("Loading images…", 0.2)
     local map, dir, downloaded = Images.prepare(raw, {
         data_dir = data_dir,
         download = true,
         is_online = true,
     })
-    Status:close()
     if viewer ~= self.viewer then return end
     if downloaded > 0 or next(map) then
-        viewer:applyImageMap(map, dir)
+        viewer:applyImageMap(map, dir or img_dir)
+        if downloaded > 0 then
+            Notification:notify(
+                string.format("Loaded %d image%s", downloaded, downloaded == 1 and "" or "s"),
+                Notification.SOURCE_ALWAYS_SHOW
+            )
+        end
     end
 end
 
@@ -815,6 +828,7 @@ function Plugin:openArticle(id)
     local image_map, resource_dir = {}, nil
     if show_images then
         image_map, resource_dir = Images.cachedMap(article.html or "", data_dir)
+        resource_dir = Images.ensureDirectory(resource_dir or Images.directory(data_dir))
     end
 
     local widget

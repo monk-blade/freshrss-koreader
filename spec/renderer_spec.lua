@@ -131,15 +131,25 @@ describe("FreshRSS renderer HTML sanitize", function()
         assert.truthy(body:find("No article content", 1, true))
     end)
 
-    it("rewrites remote images when show_images and map provided", function()
+    it("rewrites remote images to relative filenames when show_images and map provided", function()
         local article = { html = [[<p>x</p><img src="https://cdn/a.png">]] }
-        local body = Renderer.buildHtmlBody(article, {
+        local body, resource_dir = Renderer.buildHtmlBody(article, {
             show_images = true,
             image_map = { ["https://cdn/a.png"] = "deadbeef.png" },
             html_resource_directory = "/tmp/freshrss/images",
         })
         assert.truthy(body:find('src="deadbeef.png"', 1, true))
+        assert.falsy(body:find("file://", 1, true))
         assert.falsy(body:find("https://cdn/a.png", 1, true))
+        assert.are.equal("/tmp/freshrss/images", resource_dir)
+    end)
+
+    it("returns resource_dir when show_images even without map downloads", function()
+        local _, resource_dir = Renderer.buildHtmlBody({ html = "<p>x</p>" }, {
+            show_images = true,
+            data_dir = "/tmp/freshrss",
+        })
+        assert.are.equal("/tmp/freshrss/images", resource_dir)
     end)
 end)
 
@@ -179,5 +189,21 @@ describe("FreshRSS renderer CSS / view settings", function()
         local css = Renderer.buildCss({ show_images = true, line_height = 1.2 })
         assert.truthy(css:find("max%-width"))
         assert.falsy(css:find("img { display: none;", 1, true))
+    end)
+
+    it("defaults justify text to on", function()
+        assert.is_true(Renderer.readJustifyText())
+    end)
+
+    it("applies justify and body padding in CSS", function()
+        local css = Renderer.buildCss({ justify = true, line_height = 1.45, show_images = false })
+        assert.truthy(css:find("text%-align: justify"))
+        assert.truthy(css:find("padding: 1em 0%.6em"))
+    end)
+
+    it("uses left alignment when justify is off", function()
+        local css = Renderer.buildCss({ justify = false, line_height = 1.45, show_images = false })
+        assert.truthy(css:find("text%-align: left"))
+        assert.falsy(css:find("text%-align: justify"))
     end)
 end)

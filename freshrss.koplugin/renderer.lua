@@ -27,15 +27,17 @@ local HTML_MAX_BYTES = 400 * 1024
 local DEFAULT_FONT_SIZE = 20
 local DEFAULT_LINE_HEIGHT = 1.45
 local LINE_HEIGHTS = { 1.2, 1.45, 1.7 }
+local DEFAULT_JUSTIFY = true
 
-local function cssBase(line_height, show_images)
+local function cssBase(line_height, show_images, justify)
     local lh = tonumber(line_height) or DEFAULT_LINE_HEIGHT
+    local align_css = justify and "text-align: justify; " or "text-align: left; "
     local img_css = show_images
         and "img { display: block; max-width: 100%; height: auto; margin: 0.6em 0; }"
         or "img { display: none; }"
     return string.format([[
-body { margin: 0; padding: 0; line-height: %s; }
-p { margin: 0.6em 0; line-height: %s; }
+body { margin: 0; padding: 1em 0.6em; line-height: %s; %s}
+p { margin: 0.6em 0; line-height: %s; %s}
 h1, h2, h3, h4 { margin: 0.8em 0 0.4em; line-height: 1.25; }
 a { text-decoration: underline; }
 blockquote { margin: 0.6em 0; padding-left: 0.8em; border-left: 2px solid #888; }
@@ -43,7 +45,7 @@ pre, code { font-family: monospace; }
 pre { white-space: pre-wrap; }
 ul, ol { margin: 0.5em 0; padding-left: 1.4em; }
 %s
-]], tostring(lh), tostring(lh), img_css)
+]], tostring(lh), align_css, tostring(lh), align_css, img_css)
 end
 
 ---Build MuPDF CSS including optional @font-face (FootnoteWidget-style).
@@ -52,10 +54,12 @@ function Renderer.buildCss(opts)
     local show_images = opts.show_images
     if show_images == nil then show_images = Renderer.readShowImages() end
     local line_height = opts.line_height or Renderer.readLineHeight()
+    local justify = opts.justify
+    if justify == nil then justify = Renderer.readJustifyText() end
     local font_face = opts.font_face
     if font_face == nil then font_face = Renderer.readFontFace() end
 
-    local css = cssBase(line_height, show_images)
+    local css = cssBase(line_height, show_images, justify)
     if font_face and font_face ~= "" then
         css = css .. string.format(
             "\n@font-face { font-family: 'FreshRSSFont'; src: url('%s'); }\nbody { font-family: 'FreshRSSFont'; }\n",
@@ -88,9 +92,10 @@ function Renderer.sanitizeHtml(html)
         local src = tag:match("[sS][rR][cC]%s*=%s*\"([^\"]+)\"")
             or tag:match("[sS][rR][cC]%s*=%s*'([^']+)'")
             or tag:match("[sS][rR][cC]%s*=%s*([^%s>]+)")
-        if src and src ~= "" and not src:match("^https?://") and not src:match("^//")
-            and src:sub(1, 5) ~= "data:"
-        then
+        if src and src ~= "" and (
+            src:match("^file:")
+            or (not src:match("^https?://") and not src:match("^//") and src:sub(1, 5) ~= "data:")
+        ) then
             return string.format('<img src="%s"/>', src:gsub('"', ""))
         end
         return " <span>[image]</span> "
@@ -112,13 +117,19 @@ function Renderer.buildHtmlBody(article, opts)
     local prepared = raw
     local resource_dir = opts.html_resource_directory
 
-    if opts.show_images and raw ~= "" then
-        local map = opts.image_map
-        if not map then
-            map, resource_dir = Images.cachedMap(raw, opts.data_dir)
+    if opts.show_images then
+        resource_dir = resource_dir
+            or (opts.data_dir and Images.directory(opts.data_dir))
+        if raw ~= "" then
+            local map = opts.image_map
+            if not map then
+                local cached_dir
+                map, cached_dir = Images.cachedMap(raw, opts.data_dir)
+                resource_dir = resource_dir or cached_dir
+            end
+            -- Relative filenames only; ScrollHtmlWidget gets html_resource_directory.
+            prepared = Images.rewriteHtml(raw, map or {})
         end
-        prepared = Images.rewriteHtml(raw, map or {})
-        resource_dir = resource_dir or opts.html_resource_directory
     elseif raw ~= "" then
         -- Placeholders for all images when disabled
         prepared = Images.rewriteHtml(raw, {})
@@ -202,6 +213,17 @@ function Renderer.saveShowImages(on)
     G_reader_settings:flush()
 end
 
+function Renderer.readJustifyText()
+    local value = G_reader_settings:readSetting("freshrss_viewer_justify_text")
+    if value == nil then return DEFAULT_JUSTIFY end
+    return value and true or false
+end
+
+function Renderer.saveJustifyText(on)
+    G_reader_settings:saveSetting("freshrss_viewer_justify_text", on and true or false)
+    G_reader_settings:flush()
+end
+
 local ArticleViewer = InputContainer:extend{
     name = "freshrss_article_viewer",
     article = nil,
@@ -220,6 +242,7 @@ function ArticleViewer:init()
     self.font_face = Renderer.readFontFace()
     self.line_height = Renderer.readLineHeight()
     self.show_images = Renderer.readShowImages()
+    self.justify_text = Renderer.readJustifyText()
     self.image_map = self.callbacks.image_map
     self.html_resource_directory = self.callbacks.html_resource_directory
     self.data_dir = self.callbacks.data_dir
@@ -394,6 +417,7 @@ function ArticleViewer:_buildHtmlWidget()
     local css = Renderer.buildCss({
         show_images = self.show_images,
         line_height = self.line_height,
+        justify = self.justify_text,
         font_face = self.font_face,
     })
     local widget_opts = {
@@ -577,6 +601,20 @@ function ArticleViewer:onShowViewSettings()
         },
         {
             {
+                text_func = function()
+                    return self.justify_text and "Justify text: on" or "Justify text: off"
+                end,
+                align = "left",
+                callback = function()
+                    UIManager:close(dialog)
+                    self.justify_text = not self.justify_text
+                    Renderer.saveJustifyText(self.justify_text)
+                    self:reinit()
+                end,
+            },
+        },
+        {
+            {
                 text = "Open original link",
                 enabled = self.article and self.article.url ~= nil,
                 align = "left",
@@ -694,6 +732,7 @@ Renderer.ArticleViewer = ArticleViewer
 Renderer.HTML_MAX_BYTES = HTML_MAX_BYTES
 Renderer.DEFAULT_FONT_SIZE = DEFAULT_FONT_SIZE
 Renderer.DEFAULT_LINE_HEIGHT = DEFAULT_LINE_HEIGHT
+Renderer.DEFAULT_JUSTIFY = DEFAULT_JUSTIFY
 Renderer.LINE_HEIGHTS = LINE_HEIGHTS
 Renderer.Images = Images
 
