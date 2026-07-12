@@ -1144,19 +1144,11 @@ function ArticleViewer:onTapNav(_, ges)
     local right_half = ges.pos.x >= (Screen:getWidth() / 2)
     if right_half then
         if self:_atLastPage() then
-            if self.callbacks.on_next and self.callbacks.next_id then
-                self.callbacks.on_next()
-                return true
-            end
             return false
         end
         return self:scroll(1)
     end
     if self:_atFirstPage() then
-        if self.callbacks.on_prev and self.callbacks.prev_id then
-            self.callbacks.on_prev()
-            return true
-        end
         return false
     end
     return self:scroll(-1)
@@ -1164,10 +1156,6 @@ end
 
 function ArticleViewer:onScrollDown()
     if self:_atLastPage() then
-        if self.callbacks.on_next and self.callbacks.next_id then
-            self.callbacks.on_next()
-            return true
-        end
         return false
     end
     return self:scroll(1)
@@ -1175,10 +1163,6 @@ end
 
 function ArticleViewer:onScrollUp()
     if self:_atFirstPage() then
-        if self.callbacks.on_prev and self.callbacks.prev_id then
-            self.callbacks.on_prev()
-            return true
-        end
         return false
     end
     return self:scroll(-1)
@@ -1189,17 +1173,8 @@ function ArticleViewer:onSwipeNav(_, ges)
         return self:scroll(1)
     elseif ges.direction == "south" then
         return self:scroll(-1)
-    elseif ges.direction == "west" then
-        if self.callbacks.on_next and self.callbacks.next_id then
-            self.callbacks.on_next()
-            return true
-        end
-    elseif ges.direction == "east" then
-        if self.callbacks.on_prev and self.callbacks.prev_id then
-            self.callbacks.on_prev()
-            return true
-        end
     end
+    return false
 end
 
 function ArticleViewer:onPanScroll()

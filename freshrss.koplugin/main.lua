@@ -86,7 +86,6 @@ function Plugin:init()
     self.viewer = nil
     self.syncing = false
     self._list_restore = nil -- { page = n, article_id = id }
-    self._scroll_memory = {} -- article_id → scroll ratio 0..1
     self:onDispatcherRegisterActions()
     self:registerMenuEntries()
 end
@@ -246,39 +245,6 @@ function Plugin:rememberListPosition()
         page = tonumber(list.page) or 1,
         article_id = nil,
     }
-end
-
-function Plugin:rememberScrollPosition(article_id, viewer)
-    article_id = tostring(article_id or "")
-    if article_id == "" or not viewer or not viewer.html_widget then return end
-    local box = viewer.html_widget.htmlbox_widget
-    if not box or not box.page_count or box.page_count < 1 then return end
-    local page = tonumber(box.page_number) or 1
-    local ratio = (page - 1) / math.max(1, box.page_count)
-    self._scroll_memory[article_id] = ratio
-    -- Cap session map size.
-    local n = 0
-    for _ in pairs(self._scroll_memory) do n = n + 1 end
-    if n > 50 then
-        local drop
-        for id in pairs(self._scroll_memory) do
-            if id ~= article_id then drop = id; break end
-        end
-        if drop then self._scroll_memory[drop] = nil end
-    end
-end
-
-function Plugin:restoreScrollPosition(article_id, viewer)
-    article_id = tostring(article_id or "")
-    local ratio = self._scroll_memory[article_id]
-    if not ratio or not viewer or not viewer.html_widget then return end
-    if viewer.html_widget.scrollToRatio then
-        UIManager:nextTick(function()
-            if self.viewer == viewer and viewer.html_widget and viewer.html_widget.scrollToRatio then
-                viewer.html_widget:scrollToRatio(ratio)
-            end
-        end)
-    end
 end
 
 function Plugin:openHome()
@@ -1547,7 +1513,6 @@ function Plugin:openArticle(id, nav_ids)
 
     local function reopen(neighbor_id)
         if self.viewer then
-            self:rememberScrollPosition(id, self.viewer)
             UIManager:close(self.viewer)
             self.viewer = nil
         end
@@ -1593,9 +1558,6 @@ function Plugin:openArticle(id, nav_ids)
         image_map = image_map,
         html_resource_directory = resource_dir,
         on_back = function()
-            if widget then
-                self:rememberScrollPosition(id, widget)
-            end
             -- Viewer X / Back: only clear viewer and refresh list — never rebuild/close Home.
             self.viewer = nil
             self:refreshHomeAfterViewer()
@@ -1670,7 +1632,6 @@ function Plugin:openArticle(id, nav_ids)
     widget = widget_or_err
     self.viewer = widget
     UIManager:show(widget, "ui")
-    self:restoreScrollPosition(id, widget)
     -- Viewer first, then optionally mark read and download images.
     UIManager:nextTick(function()
         if mark_on_open then
