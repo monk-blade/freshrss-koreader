@@ -1,0 +1,67 @@
+-- Helpers for denser article-list rows (date + feed mandatory text).
+local ListFormat = {}
+
+---Normalize GReader/FreshRSS timestamps (seconds or milliseconds) to epoch seconds.
+function ListFormat.toEpochSeconds(ts)
+    local n = tonumber(ts)
+    if not n or n <= 0 then return nil end
+    -- Milliseconds (common in some GReader payloads)
+    if n > 1e12 then
+        n = math.floor(n / 1000)
+    end
+    return n
+end
+
+---Short published/updated label for Menu mandatory column.
+function ListFormat.formatArticleDate(ts, now)
+    local n = ListFormat.toEpochSeconds(ts)
+    if not n then return nil end
+    now = now or os.time()
+    local today = os.date("%Y-%m-%d", now)
+    local day = os.date("%Y-%m-%d", n)
+    if day == today then
+        return os.date("%H:%M", n)
+    end
+    if os.date("%Y", n) == os.date("%Y", now) then
+        return os.date("%b %d", n)
+    end
+    return os.date("%Y-%m-%d", n)
+end
+
+---Right-column text: "12:30 · Feed" / "Jul 12 · Feed" / feed-only / date-only.
+function ListFormat.rowMandatory(article, now)
+    article = article or {}
+    local date = ListFormat.formatArticleDate(article.updated or article.published, now)
+    local feed = tostring(article.feed_title or "")
+    if feed == "" or feed == "nil" then feed = "" end
+    if date and feed ~= "" then
+        return date .. " · " .. feed
+    end
+    if date then return date end
+    if feed ~= "" then return feed end
+    return nil
+end
+
+---Lookup unread count for a stream id from FreshRSS unread-count meta.
+function ListFormat.unreadCountForStream(counts_meta, stream_id)
+    if stream_id == nil or stream_id == "" then return nil end
+    if type(counts_meta) ~= "table" then return nil end
+    local list = counts_meta.unreadcounts
+    if type(list) ~= "table" then
+        -- Some callers may pass the array directly
+        if counts_meta[1] and type(counts_meta[1]) == "table" then
+            list = counts_meta
+        else
+            return nil
+        end
+    end
+    local want = tostring(stream_id)
+    for _, row in ipairs(list) do
+        if type(row) == "table" and tostring(row.id) == want then
+            return tonumber(row.count)
+        end
+    end
+    return nil
+end
+
+return ListFormat

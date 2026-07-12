@@ -9,6 +9,7 @@ local MAX_ARTICLE_CAP = 500
 local PAGE_SIZE = 100
 local MAX_SYNC_IMAGES = 50
 
+-- Prefer settings-backed budget when Images module is wired; else constant.
 local function hasCategory(categories, state_id)
     if type(categories) ~= "table" then return false end
     for _, category in ipairs(categories) do
@@ -164,13 +165,15 @@ function Sync:prefetchImages(items, on_progress)
     local dir = Images.ensureDirectory(Images.directory(data_dir))
     local jobs = {}
     local seen = {}
+    local sync_budget = Images.readSyncBudget and Images.readSyncBudget() or MAX_SYNC_IMAGES
+    local max_parallel = Images.readMaxParallel and Images.readMaxParallel() or Images.MAX_PARALLEL
 
     for _, raw in ipairs(items) do
-        if #jobs >= MAX_SYNC_IMAGES then break end
+        if #jobs >= sync_budget then break end
         local html = raw.summary and raw.summary.content or raw.content and raw.content.content or ""
         if html ~= "" then
             for _, url in ipairs(Images.extractImageUrls(html)) do
-                if #jobs >= MAX_SYNC_IMAGES then break end
+                if #jobs >= sync_budget then break end
                 local norm = Images.normalizeUrl(url)
                 if not seen[norm] and not Images.findCachedFilename(dir, norm) then
                     seen[norm] = true
@@ -190,8 +193,8 @@ function Sync:prefetchImages(items, on_progress)
     end
 
     local _, total_downloaded = Images.downloadMany(jobs, {
-        max_parallel = Images.MAX_PARALLEL,
-        max_success = MAX_SYNC_IMAGES,
+        max_parallel = max_parallel,
+        max_success = sync_budget,
         on_progress = function(done, total)
             if total > 0 then
                 report(on_progress, "images", 0.92 + 0.06 * (done / total))

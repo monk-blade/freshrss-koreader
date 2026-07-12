@@ -27,6 +27,7 @@ local _session = {
     applied = false,
     saved_fontmap = nil,
     injected_fallback = nil,
+    hint_shown = false,
 }
 
 ---Normalize a font path/filename for substring matching.
@@ -222,6 +223,7 @@ function ListFonts.restore()
     _session.applied = false
     _session.saved_fontmap = nil
     _session.injected_fallback = nil
+    _session.hint_shown = false
 end
 
 ---Test helper: reset session without touching Font (specs).
@@ -229,6 +231,32 @@ function ListFonts._resetSessionForTests()
     _session.applied = false
     _session.saved_fontmap = nil
     _session.injected_fallback = nil
+    _session.hint_shown = false
+end
+
+---Message when preferred Latin/Gujarati fonts are not installed (nil if OK).
+function ListFonts.missingFontsHint(font_list)
+    local missing = {}
+    if not ListFonts.resolveLatinFont(font_list) then
+        table.insert(missing, "Roboto Condensed (Latin list titles)")
+    end
+    if not ListFonts.resolveGujaratiFont(font_list) then
+        table.insert(missing, "Noto Serif Gujarati (Gujarati glyphs)")
+    end
+    if #missing == 0 then return nil end
+    return "For clearer article-list fonts, install in KOReader’s fonts folder:\n• "
+        .. table.concat(missing, "\n• ")
+        .. "\nThen pick them under Settings → List font."
+end
+
+---Show missing-font hint at most once per home session.
+function ListFonts.maybeShowMissingHint(show_fn, font_list)
+    if _session.hint_shown then return false end
+    local msg = ListFonts.missingFontsHint(font_list)
+    if not msg then return false end
+    _session.hint_shown = true
+    if show_fn then show_fn(msg) end
+    return true
 end
 
 return ListFonts

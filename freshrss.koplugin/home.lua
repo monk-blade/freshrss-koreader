@@ -51,7 +51,8 @@ function Home:buildLayout()
         title_subtitle_v_padding = Screen:scaleBySize(1),
         bottom_v_padding = Size.padding.small,
         left_icon = plugin.icons:name("freshrss"),
-        left_icon_size_ratio = 0.7,
+        left_icon_size_ratio = 0.85,
+        left_icon_allow_flash = true,
         left_icon_tap_callback = function()
             plugin:requestSync()
         end,
@@ -104,7 +105,8 @@ function Home:buildLayout()
         is_borderless = true,
         width = width,
         height = list_height,
-        multilines_show_more_text = true,
+        -- Single-line rows keep the list denser (Gujarati titles truncate instead of wrapping).
+        multilines_show_more_text = false,
         item_table = plugin:buildItemTable(),
         show_parent = self,
         close_callback = nil,

@@ -1,6 +1,6 @@
 # AGENTS.md — FreshRSS for KOReader
 
-Offline-first KOReader plugin that reads FreshRSS via the Google Reader–compatible API. Local cache opens immediately; sync/prefetch runs in the background. Current plugin version is in `freshrss.koplugin/_meta.lua` (e.g. v0.4.1). Remote: `https://github.com/monk-blade/freshrss-koreader.git`.
+Offline-first KOReader plugin that reads FreshRSS via the Google Reader–compatible API. Local cache opens immediately; sync/prefetch runs in the background. Current plugin version is in `freshrss.koplugin/_meta.lua` (e.g. v0.5.0). Remote: `https://github.com/monk-blade/freshrss-koreader.git`.
 
 ## What to edit
 
@@ -32,9 +32,11 @@ API (api.lua) → Sync (sync.lua) → Cache (cache.lua)
 - **`cache.lua`** — on-disk article index under KOReader data dir `freshrss/`.
 - **`home.lua`** — full-screen home (title bar + Browse/Mark all/Settings + nested article `Menu`).
 - **`renderer.lua`** — `ScrollHtmlWidget` viewer (fonts, line height, images toggle).
-- **`images.lua`** — download images locally; rewrite `<img src>` for MuPDF.
+- **`list_fonts.lua`** — Latin Menu face + Gujarati Font.fallbacks while home is open.
+- **`list_format.lua`** — short published dates and feed unread-count helpers for list rows.
+- **`nav.lua`** — stable Prev/Next against an id snapshot.
 - **`ui_status.lua`** — top sync progress strip.
-- **`icons.lua`** / **`assets/`** — Lucide icons.
+- **`icons.lua`** / **`assets/`** — Lucide + FreshRSS icons.
 
 Flow: sync populates cache → home lists by browse mode → open article builds HTML → images rewrite to **relative filenames**; viewer sets `html_resource_directory` to the article image dir so MuPDF resolves them via its directory archive.
 

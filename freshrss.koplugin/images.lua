@@ -10,6 +10,81 @@ Images.TOTAL_TIMEOUT = 12
 Images.SELECT_TIMEOUT = 0.2
 Images.MAX_REDIRECTS = 5
 
+-- Settings cycles (defaults match the constants above).
+Images.SETTING_MAX_IMAGES = "freshrss_image_max_per_article"
+Images.SETTING_SYNC_BUDGET = "freshrss_image_sync_budget"
+Images.SETTING_PARALLEL = "freshrss_image_parallel"
+Images.MAX_IMAGES_CAPS = { 5, 10, 15, 20 }
+Images.SYNC_BUDGET_CAPS = { 20, 50, 100, 150 }
+Images.PARALLEL_CAPS = { 1, 2, 3 }
+Images.DEFAULT_SYNC_BUDGET = 50
+
+local function cycleCap(current, caps, default)
+    current = tonumber(current) or default
+    for i, cap in ipairs(caps) do
+        if cap == current and caps[i + 1] then
+            return caps[i + 1]
+        elseif cap == current then
+            return caps[1]
+        elseif current < cap then
+            return cap
+        end
+    end
+    return caps[1] or default
+end
+
+local function clampToCaps(value, caps, default)
+    value = tonumber(value) or default
+    for _, cap in ipairs(caps) do
+        if cap == value then return value end
+    end
+    -- Snap to nearest listed cap
+    local best, best_dist = default, math.huge
+    for _, cap in ipairs(caps) do
+        local d = math.abs(cap - value)
+        if d < best_dist then
+            best, best_dist = cap, d
+        end
+    end
+    return best
+end
+
+function Images.readMaxImages()
+    local raw = G_reader_settings and G_reader_settings:readSetting(Images.SETTING_MAX_IMAGES)
+    return clampToCaps(raw, Images.MAX_IMAGES_CAPS, Images.MAX_IMAGES)
+end
+
+function Images.cycleMaxImages()
+    local next_cap = cycleCap(Images.readMaxImages(), Images.MAX_IMAGES_CAPS, Images.MAX_IMAGES)
+    G_reader_settings:saveSetting(Images.SETTING_MAX_IMAGES, next_cap)
+    G_reader_settings:flush()
+    return next_cap
+end
+
+function Images.readSyncBudget()
+    local raw = G_reader_settings and G_reader_settings:readSetting(Images.SETTING_SYNC_BUDGET)
+    return clampToCaps(raw, Images.SYNC_BUDGET_CAPS, Images.DEFAULT_SYNC_BUDGET)
+end
+
+function Images.cycleSyncBudget()
+    local next_cap = cycleCap(Images.readSyncBudget(), Images.SYNC_BUDGET_CAPS, Images.DEFAULT_SYNC_BUDGET)
+    G_reader_settings:saveSetting(Images.SETTING_SYNC_BUDGET, next_cap)
+    G_reader_settings:flush()
+    return next_cap
+end
+
+function Images.readMaxParallel()
+    local raw = G_reader_settings and G_reader_settings:readSetting(Images.SETTING_PARALLEL)
+    return clampToCaps(raw, Images.PARALLEL_CAPS, Images.MAX_PARALLEL)
+end
+
+function Images.cycleMaxParallel()
+    local next_cap = cycleCap(Images.readMaxParallel(), Images.PARALLEL_CAPS, Images.MAX_PARALLEL)
+    G_reader_settings:saveSetting(Images.SETTING_PARALLEL, next_cap)
+    G_reader_settings:flush()
+    return next_cap
+end
+
 local VALID_EXT = {
     jpg = true,
     jpeg = true,
@@ -170,16 +245,18 @@ function Images.findCachedFilename(dir, url)
     return nil
 end
 ---Extract http(s) image URLs from HTML (capped).
-function Images.extractImageUrls(html)
+-- @param max_images number|nil override cap (defaults to Images.readMaxImages())
+function Images.extractImageUrls(html, max_images)
     local urls = {}
     local seen = {}
     local body = tostring(html or "")
+    local cap = tonumber(max_images) or Images.readMaxImages()
     for tag in body:gmatch("<%s*[iI][mM][gG][^>]*>") do
         for _, src in ipairs(Images.urlsFromImgTag(tag)) do
             if not seen[src] then
                 seen[src] = true
                 table.insert(urls, src)
-                if #urls >= Images.MAX_IMAGES then return urls end
+                if #urls >= cap then return urls end
             end
         end
     end
@@ -1084,7 +1161,7 @@ function Images.prepare(html, opts)
 
     if #jobs > 0 then
         local results = Images.downloadMany(jobs, {
-            max_parallel = opts.max_parallel or Images.MAX_PARALLEL,
+            max_parallel = opts.max_parallel or Images.readMaxParallel(),
             serial = opts.serial,
             on_progress = opts.on_progress,
         })

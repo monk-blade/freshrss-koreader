@@ -3,6 +3,14 @@ package.path = "./freshrss.koplugin/?.lua;./?.lua;" .. package.path
 local helpers = dofile("./spec/helpers.lua")
 helpers.install_lfs()
 
+local settings_store = {}
+_G.G_reader_settings = {
+    readSetting = function(_, key) return settings_store[key] end,
+    saveSetting = function(_, key, value) settings_store[key] = value end,
+    delSetting = function(_, key) settings_store[key] = nil end,
+    flush = function() end,
+}
+
 -- Enrich lfs stub with attributes for cache checks.
 do
     local lfs = require("libs/libkoreader-lfs")
@@ -33,6 +41,9 @@ end
 local Images = dofile("./freshrss.koplugin/images.lua")
 
 describe("FreshRSS images helpers", function()
+    before_each(function()
+        settings_store = {}
+    end)
     it("hashes URLs stably", function()
         local a = Images.hashUrl("https://example.com/a.png")
         local b = Images.hashUrl("https://example.com/a.png")
@@ -279,5 +290,24 @@ describe("FreshRSS images helpers", function()
         assert.truthy(rewritten:find('src="' .. corrected .. '"', 1, true))
         assert.falsy(rewritten:find("%[image%]"))
         assert.truthy(out_dir:find("images", 1, true))
+    end)
+
+    it("reads and cycles image setting caps", function()
+        assert.are.equal(10, Images.readMaxImages())
+        assert.are.equal(50, Images.readSyncBudget())
+        assert.are.equal(3, Images.readMaxParallel())
+        assert.are.equal(15, Images.cycleMaxImages())
+        assert.are.equal(15, Images.readMaxImages())
+        assert.are.equal(100, Images.cycleSyncBudget())
+        assert.are.equal(1, Images.cycleMaxParallel())
+        assert.are.equal(2, Images.cycleMaxParallel())
+        -- Cap extractImageUrls to settings
+        local html = ""
+        for i = 1, 20 do
+            html = html .. string.format('<img src="https://ex/%d.png">', i)
+        end
+        settings_store[Images.SETTING_MAX_IMAGES] = 5
+        assert.are.equal(5, #Images.extractImageUrls(html))
+        assert.are.equal(3, #Images.extractImageUrls(html, 3))
     end)
 end)

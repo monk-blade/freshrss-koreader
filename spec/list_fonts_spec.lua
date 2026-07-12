@@ -79,4 +79,19 @@ describe("FreshRSS list_fonts helpers", function()
         assert.equals("Default", ListFonts.displayName(nil))
         assert.equals("Roboto.ttf", ListFonts.displayName("/a/b/Roboto.ttf"))
     end)
+
+    it("builds missing-font hint when preferred fonts absent", function()
+        local msg = ListFonts.missingFontsHint({})
+        assert.truthy(msg:find("Roboto Condensed", 1, true))
+        assert.truthy(msg:find("Noto Serif Gujarati", 1, true))
+        local fonts = {
+            "/fonts/RobotoCondensed-Regular.ttf",
+            "/fonts/NotoSerifGujarati-Regular.ttf",
+        }
+        assert.is_nil(ListFonts.missingFontsHint(fonts))
+        local shown = {}
+        assert.is_true(ListFonts.maybeShowMissingHint(function(m) shown[#shown + 1] = m end, {}))
+        assert.equals(1, #shown)
+        assert.is_false(ListFonts.maybeShowMissingHint(function() end, {}))
+    end)
 end)

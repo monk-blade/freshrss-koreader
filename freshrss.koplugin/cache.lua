@@ -104,6 +104,23 @@ function Cache:unreadCount()
     return count
 end
 
+---Unread count for one stream id from last sync's unread-count meta (or nil).
+function Cache:unreadCountForStream(stream_id)
+    if stream_id == nil or stream_id == "" then return nil end
+    local meta = self:getMeta()
+    local counts = meta.counts
+    if type(counts) ~= "table" then return nil end
+    local list = counts.unreadcounts
+    if type(list) ~= "table" then return nil end
+    local want = tostring(stream_id)
+    for _, row in ipairs(list) do
+        if type(row) == "table" and tostring(row.id) == want then
+            return tonumber(row.count)
+        end
+    end
+    return nil
+end
+
 -- Mark matching unread articles as read locally. Returns count updated.
 function Cache:markAllRead(mode, opts)
     opts = opts or {}

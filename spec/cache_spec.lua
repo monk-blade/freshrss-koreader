@@ -54,4 +54,18 @@ describe("FreshRSS cache", function()
         assert.equals(2, cache:clearQueue())
         assert.equals(0, #cache:queuedActions())
     end)
+
+    it("reads per-stream unread counts from sync meta", function()
+        cache:setMeta({
+            counts = {
+                unreadcounts = {
+                    { id = "feed/http://news", count = 12 },
+                    { id = "feed/http://empty", count = 0 },
+                },
+            },
+        })
+        assert.equals(12, cache:unreadCountForStream("feed/http://news"))
+        assert.equals(0, cache:unreadCountForStream("feed/http://empty"))
+        assert.is_nil(cache:unreadCountForStream("feed/missing"))
+    end)
 end)

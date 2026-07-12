@@ -72,7 +72,6 @@ function Icons:button(key, opts)
 end
 
 function Icons:install()
-    if self.installed then return end
     local dest_dir = DataStorage:getDataDir() .. "/icons"
     lfs.mkdir(dest_dir)
     for key, file in pairs(ICON_FILES) do

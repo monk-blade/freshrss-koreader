@@ -22,6 +22,7 @@ local Status = dofile(plugin_dir .. "/ui_status.lua")
 local Home = dofile(plugin_dir .. "/home.lua")
 local Nav = dofile(plugin_dir .. "/nav.lua")
 local ListFonts = dofile(plugin_dir .. "/list_fonts.lua")
+local ListFormat = dofile(plugin_dir .. "/list_format.lua")
 
 local Plugin = WidgetContainer:extend{
     name = "freshrss",
@@ -406,9 +407,14 @@ function Plugin:buildItemTable()
             for _, sub in ipairs(subs) do
                 local sid = sub.id or sub.feedId
                 local title = sub.title or sid or "Feed"
+                local count = self.cache:unreadCountForStream(sid)
+                local mandatory
+                if count ~= nil then
+                    mandatory = tostring(count)
+                end
                 table.insert(entries, {
                     text = title,
-                    mandatory = sid,
+                    mandatory = mandatory,
                     callback = function()
                         self:setBrowseState({ mode = "feed", feed_id = sid })
                         self:showCached(true)
@@ -477,7 +483,7 @@ function Plugin:buildItemTable()
         local star = article.starred and "★ " or ""
         table.insert(entries, {
             text = marker .. star .. articleTitle(article),
-            mandatory = article.feed_title,
+            mandatory = ListFormat.rowMandatory(article),
             callback = function() self:openArticle(article.id) end,
         })
     end
@@ -634,6 +640,9 @@ function Plugin:showSettingsMenu()
     local auto = self:autoRefreshEnabled()
     local unread_only = self:syncUnreadOnly()
     local pending = #self.cache:queuedActions()
+    ListFonts.maybeShowMissingHint(function(msg)
+        UIManager:show(InfoMessage:new{ text = msg, timeout = 6 })
+    end)
     local entries = {
         {
             text = "Connection…",
@@ -663,6 +672,27 @@ function Plugin:showSettingsMenu()
             end,
         },
         {
+            text = "Images per article: " .. tostring(Images.readMaxImages()),
+            callback = function()
+                Images.cycleMaxImages()
+                self:showSettingsMenu()
+            end,
+        },
+        {
+            text = "Sync image budget: " .. tostring(Images.readSyncBudget()),
+            callback = function()
+                Images.cycleSyncBudget()
+                self:showSettingsMenu()
+            end,
+        },
+        {
+            text = "Image download parallel: " .. tostring(Images.readMaxParallel()),
+            callback = function()
+                Images.cycleMaxParallel()
+                self:showSettingsMenu()
+            end,
+        },
+        {
             text = self:listFontLabel("latin"),
             callback = function() self:showListFontPicker("latin") end,
         },
@@ -687,7 +717,10 @@ function Plugin:showSettingsMenu()
         covers_fullscreen = true,
         close_callback = function()
             self.settings_menu = nil
-            if self.home then self:showCached() end
+            if self.home then
+                ListFonts.apply()
+                self:showCached()
+            end
         end,
     }
     UIManager:show(self.settings_menu, "ui")
@@ -812,6 +845,12 @@ function Plugin:onHomeClosed()
 end
 
 function Plugin:showCached(rebuild_chrome)
+    if self.icons then
+        self.icons:install()
+    end
+    if self.list_fonts then
+        self.list_fonts.apply()
+    end
     if self.home and not rebuild_chrome then
         if self.home.title_bar then
             self.home.title_bar:setTitle(self:menuTitle())
@@ -832,6 +871,9 @@ end
 
 function Plugin:refreshHomeAfterViewer()
     if not self.home then return end
+    if self.list_fonts then
+        self.list_fonts.apply()
+    end
     if self.home.title_bar then
         self.home.title_bar:setTitle(self:menuTitle())
         self.home.title_bar:setSubTitle(self:menuSubtitle())
