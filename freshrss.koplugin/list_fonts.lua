@@ -243,6 +243,16 @@ local function evictSessionFaces(Font)
     end
 end
 
+local function fontFileExists(path)
+    if type(path) ~= "string" or path == "" then return false end
+    local f = io.open(path, "rb")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
 ---Remap Menu face + ensure Gujarati in Font.fallbacks while home is open.
 function ListFonts.apply()
     local Font = require("ui/font")
@@ -251,6 +261,9 @@ function ListFonts.apply()
     end
 
     local latin = ListFonts.resolveLatinFont()
+    if latin and not fontFileExists(latin) then
+        latin = nil
+    end
     _session.latin_realname = latin
     if latin then
         Font.fontmap[ListFonts.MENU_FACE] = latin
@@ -265,6 +278,9 @@ function ListFonts.apply()
     end
 
     local gujarati = ListFonts.resolveGujaratiFont()
+    if gujarati and not fontFileExists(gujarati) then
+        gujarati = nil
+    end
     if gujarati and not fallbackHas(Font.fallbacks, gujarati) then
         -- After primary UI sans (index 1); HarfBuzz walks fallbacks for missing glyphs.
         local insert_at = 2
@@ -274,6 +290,14 @@ function ListFonts.apply()
     end
 
     clearFaceFallbackCaches(Font)
+    -- Also drop cached Menu faces so size/face changes take effect cleanly.
+    if Font.faces then
+        for hash, _ in pairs(Font.faces) do
+            if type(hash) == "string" and hash:find(ListFonts.MENU_FACE, 1, true) then
+                Font.faces[hash] = nil
+            end
+        end
+    end
     _session.applied = true
 end
 
@@ -289,6 +313,14 @@ function ListFonts.restore()
         removeFallback(Font.fallbacks, _session.injected_fallback)
     end
     evictSessionFaces(Font)
+    -- Evict any remaining Menu face sizes built against the remapped fontmap.
+    if Font.faces then
+        for hash, _ in pairs(Font.faces) do
+            if type(hash) == "string" and hash:find(ListFonts.MENU_FACE, 1, true) then
+                Font.faces[hash] = nil
+            end
+        end
+    end
     _session.applied = false
     _session.saved_fontmap = nil
     _session.latin_realname = nil

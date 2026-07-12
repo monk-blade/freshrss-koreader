@@ -8,7 +8,6 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Menu = require("ui/widget/menu")
-local ReaderDictionary = require("apps/reader/modules/readerdictionary")
 local ScrollHtmlWidget = require("ui/widget/scrollhtmlwidget")
 local Size = require("ui/size")
 local SpinWidget = require("ui/widget/spinwidget")
@@ -472,11 +471,13 @@ function ArticleViewer:init()
     self.data_dir = self.callbacks.data_dir
 
     -- Stub enough of ReaderUI for ReaderDictionary (FileManager pattern).
+    -- Dictionary is created lazily — a failed require/init must not kill openArticle.
     self.menu = { registerToMainMenu = function() end }
     self.doc_props = {
         display_title = util.htmlEntitiesToUtf8(tostring((self.article or {}).title or "FreshRSS")),
     }
-    self.dictionary = ReaderDictionary:new{ ui = self }
+    self.dictionary = nil
+    self._dictionary_failed = false
 
     self:build()
 
@@ -487,7 +488,7 @@ function ArticleViewer:init()
             ScrollUp = { { Input.group.PgBack } },
             ShowMenu = { { "Menu" } },
         }
-        if Device:hasKeyboard() then
+        if Device.hasKeyboard and Device:hasKeyboard() then
             self.key_events.ShowDictionaryLookup = { { "Alt", "D" }, { "Ctrl", "D" } }
         end
     end
@@ -654,7 +655,9 @@ function ArticleViewer:_buildTitleBar()
         fullscreen = true,
         title = title,
         subtitle = subtitle,
-        title_face = Font:getFace("smalltfont", self.title_font_size),
+        title_face = Font:getFace("smalltfont", self.title_font_size)
+            or Font:getFace("x_smalltfont")
+            or Font:getFace("cfont"),
         title_multilines = true,
         title_shrink_font_to_fit = false,
         with_bottom_line = true,
@@ -720,6 +723,37 @@ function ArticleViewer:_availableHeight()
     return h
 end
 
+function ArticleViewer:_hardenScrollHtml(widget)
+    -- KOReader VerticalScrollBar only sets touch_dimen in paintTo when enable=true.
+    -- Disabled bars (single-page articles) still receive gestures → nil touch_dimen crash
+    -- on Kindle Paperwhite. See crash.log: verticalscrollbar.lua:77.
+    if not widget or not widget.v_scroll_bar then return widget end
+    local bar = widget.v_scroll_bar
+    if not bar.touch_dimen then
+        bar.touch_dimen = Geom:new{ x = 0, y = 0, w = 0, h = 0 }
+    end
+    if not bar.enable then
+        bar.ges_events = nil
+        bar.scroll_callback = nil
+    else
+        -- Wrap scroll handler so a race before first paint cannot nil-index.
+        local orig = bar.onTapScroll
+        if type(orig) == "function" and not bar._freshrss_hardened then
+            bar.onTapScroll = function(self, arg, ges)
+                if not self.touch_dimen then return true end
+                return orig(self, arg, ges)
+            end
+            bar.onHoldScroll = bar.onTapScroll
+            bar.onHoldPanScroll = bar.onTapScroll
+            bar.onHoldReleaseScroll = bar.onTapScroll
+            bar.onPanScroll = bar.onTapScroll
+            bar.onPanScrollRelease = bar.onTapScroll
+            bar._freshrss_hardened = true
+        end
+    end
+    return widget
+end
+
 function ArticleViewer:_buildHtmlWidget()
     if self.html_widget and self.html_widget.free then
         self.html_widget:free()
@@ -769,19 +803,46 @@ function ArticleViewer:_buildHtmlWidget()
         return ScrollHtmlWidget:new(widget_opts)
     end)
     if ok and html_widget_or_err then
-        self.html_widget = html_widget_or_err
-    else
-        local plain = util.htmlToPlainTextIfHtml(tostring(article.html or ""))
-        if plain == "" then plain = "Unable to render article HTML." end
-        self.html_widget = ScrollHtmlWidget:new{
-            html_body = "<p>" .. util.htmlEscape(plain):gsub("\n", "<br/>") .. "</p>",
-            css = css,
+        self.html_widget = self:_hardenScrollHtml(html_widget_or_err)
+        return
+    end
+    local plain = util.htmlToPlainTextIfHtml(tostring(article.html or ""))
+    if plain == "" then plain = "Unable to render article HTML." end
+    local fallback_opts = {
+        html_body = "<p>" .. util.htmlEscape(plain):gsub("\n", "<br/>") .. "</p>",
+        css = css,
+        default_font_size = font_px,
+        is_xhtml = false,
+        width = width,
+        height = height,
+        dialog = self,
+        highlight_text_selection = true,
+    }
+    local ok2, fallback = pcall(function()
+        return ScrollHtmlWidget:new(fallback_opts)
+    end)
+    if ok2 and fallback then
+        self.html_widget = self:_hardenScrollHtml(fallback)
+        return
+    end
+    local ok3, last = pcall(function()
+        return ScrollHtmlWidget:new{
+            html_body = "<p>Unable to render this article on this device.</p>",
+            css = "body { margin: 0; padding: 8px; }",
             default_font_size = font_px,
             is_xhtml = false,
             width = width,
             height = height,
             dialog = self,
-            highlight_text_selection = true,
+        }
+    end)
+    if ok3 and last then
+        self.html_widget = self:_hardenScrollHtml(last)
+    else
+        self.html_widget = {
+            scrollText = function() end,
+            free = function() end,
+            htmlbox_widget = { page_number = 1, page_count = 1 },
         }
     end
 end
@@ -1156,6 +1217,25 @@ function ArticleViewer:onPanReleaseScroll(_, ges)
     end
 end
 
+function ArticleViewer:ensureDictionary()
+    if self.dictionary then return self.dictionary end
+    if self._dictionary_failed then return nil end
+    local ok_mod, ReaderDictionary = pcall(require, "apps/reader/modules/readerdictionary")
+    if not ok_mod or not ReaderDictionary then
+        self._dictionary_failed = true
+        return nil
+    end
+    local ok_new, dict = pcall(function()
+        return ReaderDictionary:new{ ui = self }
+    end)
+    if not ok_new or not dict then
+        self._dictionary_failed = true
+        return nil
+    end
+    self.dictionary = dict
+    return self.dictionary
+end
+
 function ArticleViewer:onDictionarySelection(text, hold_duration)
     text = tostring(text or "")
     if text == "" then return end
@@ -1165,36 +1245,48 @@ function ArticleViewer:onDictionarySelection(text, hold_duration)
             box:scheduleClearHighlightAndRedraw()
         end
     end
-    if not self.dictionary then
-        dict_close_callback()
-        return
-    end
     -- Long hold (≥3s) tries Wikipedia when available; otherwise dictionary.
     if hold_duration and hold_duration >= time.s(3) then
         local ok, ReaderWikipedia = pcall(require, "apps/reader/modules/readerwikipedia")
         if ok and ReaderWikipedia then
             if not self.wikipedia then
-                self.wikipedia = ReaderWikipedia:new{ ui = self }
+                local ok_wiki, wiki = pcall(function()
+                    return ReaderWikipedia:new{ ui = self }
+                end)
+                if ok_wiki and wiki then
+                    self.wikipedia = wiki
+                end
             end
-            if self.wikipedia.onLookupWikipedia then
-                self.wikipedia:onLookupWikipedia(text, false, nil, nil, nil, dict_close_callback)
+            if self.wikipedia and self.wikipedia.onLookupWikipedia then
+                pcall(function()
+                    self.wikipedia:onLookupWikipedia(text, false, nil, nil, nil, dict_close_callback)
+                end)
                 return
             end
         end
     end
-    self.dictionary:onLookupWord(text, false, nil, nil, nil, dict_close_callback)
+    local dict = self:ensureDictionary()
+    if not dict then
+        dict_close_callback()
+        return
+    end
+    pcall(function()
+        dict:onLookupWord(text, false, nil, nil, nil, dict_close_callback)
+    end)
 end
 
 function ArticleViewer:onShowDictionaryLookup()
-    if self.dictionary and self.dictionary.onShowDictionaryLookup then
-        self.dictionary:onShowDictionaryLookup()
+    local dict = self:ensureDictionary()
+    if dict and dict.onShowDictionaryLookup then
+        pcall(function() dict:onShowDictionaryLookup() end)
     end
     return true
 end
 
 function ArticleViewer:onLookupWord(word, is_sane, boxes, highlight, link, dict_close_callback)
-    if self.dictionary then
-        return self.dictionary:onLookupWord(word, is_sane, boxes, highlight, link, dict_close_callback)
+    local dict = self:ensureDictionary()
+    if dict then
+        return dict:onLookupWord(word, is_sane, boxes, highlight, link, dict_close_callback)
     end
 end
 

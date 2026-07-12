@@ -20,6 +20,19 @@ describe("FreshRSS favorite categories", function()
         assert.equals("AB", FavCategories.twoLetters("A B"))
     end)
 
+    it("builds two-letter tiles from Gujarati without byte-slicing", function()
+        -- "એડિટોરિયલ" — first two Unicode letters, not two UTF-8 bytes
+        local tile = FavCategories.twoLetters("એડિટોરિયલ")
+        assert.not_equals("??", tile)
+        local chars = {}
+        for uchar in tile:gmatch("([%z\1-\127\194-\244][\128-\191]*)") do
+            table.insert(chars, uchar)
+        end
+        assert.equals(2, #chars)
+        assert.equals("એ", chars[1])
+        assert.equals("ડ", chars[2])
+    end)
+
     it("persists add remove and icon", function()
         FavCategories.add(settings, "user/-/label/News")
         assert.is_true(FavCategories.isFavorite(settings, "user/-/label/News"))

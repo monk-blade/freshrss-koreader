@@ -112,23 +112,25 @@ function Icons:button(key, opts)
 end
 
 function Icons:install()
-    local dest_dir = DataStorage:getDataDir() .. "/icons"
-    lfs.mkdir(dest_dir)
-    for key, file in pairs(ICON_FILES) do
-        local src = self.assets_dir .. "/" .. file
-        local dest = dest_dir .. "/" .. self:name(key) .. ".svg"
-        local src_file = io.open(src, "rb")
-        if src_file then
-            local data = src_file:read("*a")
-            src_file:close()
-            local dest_file = io.open(dest, "wb")
-            if dest_file then
-                dest_file:write(data)
-                dest_file:close()
+    local ok = pcall(function()
+        local dest_dir = DataStorage:getDataDir() .. "/icons"
+        lfs.mkdir(dest_dir)
+        for key, file in pairs(ICON_FILES) do
+            local src = self.assets_dir .. "/" .. file
+            local dest = dest_dir .. "/" .. self:name(key) .. ".svg"
+            local src_file = io.open(src, "rb")
+            if src_file then
+                local data = src_file:read("*a")
+                src_file:close()
+                local dest_file = io.open(dest, "wb")
+                if dest_file then
+                    dest_file:write(data)
+                    dest_file:close()
+                end
             end
         end
-    end
-    self.installed = true
+    end)
+    self.installed = ok and true or self.installed
 end
 
 Icons.ICON_FILES = ICON_FILES

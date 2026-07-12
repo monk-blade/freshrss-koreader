@@ -16,25 +16,38 @@ function FavCategories.labelDisplayName(label_id)
     return name:gsub("^user/%-/label/", "")
 end
 
----Two-letter tile text from a category display name (UTF-8 safe for ASCII; else byte fallback).
+---Two-letter tile text from a category display name (Unicode-safe).
+---KOReader has no Lua `utf8` module; never byte-slice (breaks Gujarati → FreeType crash).
 function FavCategories.twoLetters(name)
     name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
     name = name:gsub("%s+", "")
     if name == "" then return "??" end
-    -- Prefer first two Unicode codepoints when available via utf8 library.
-    local ok, utf8 = pcall(require, "utf8")
-    if ok and utf8 and utf8.len and utf8.offset then
-        local len = utf8.len(name)
-        if len and len >= 2 then
-            local i2 = utf8.offset(name, 3)
-            return name:sub(1, (i2 or (#name + 1)) - 1):upper()
-        elseif len == 1 then
-            return (name .. name):upper()
+    local chars
+    local ok_util, util = pcall(require, "util")
+    if ok_util and util and util.splitToChars then
+        chars = util.splitToChars(name)
+    else
+        -- Same idea as util.UTF8_CHAR_PATTERN (no KOReader util in unit tests).
+        chars = {}
+        for uchar in name:gmatch("([%z\1-\127\194-\244][\128-\191]*)") do
+            table.insert(chars, uchar)
         end
     end
-    local letters = name:sub(1, 2)
-    if #letters < 2 then letters = (letters .. "??"):sub(1, 2) end
-    return letters:upper()
+    if type(chars) ~= "table" or #chars == 0 then
+        return "??"
+    end
+    local function tileChar(c)
+        c = tostring(c or "")
+        if c == "" then return "?" end
+        -- string.upper is only safe for single-byte ASCII
+        if #c == 1 and c:match("%a") then
+            return c:upper()
+        end
+        return c
+    end
+    local a = tileChar(chars[1])
+    local b = tileChar(chars[2] or chars[1])
+    return a .. b
 end
 
 function FavCategories.read(settings)

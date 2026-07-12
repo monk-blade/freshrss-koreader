@@ -1,6 +1,6 @@
 # AGENTS.md — FreshRSS for KOReader
 
-Offline-first KOReader plugin that reads FreshRSS via the Google Reader–compatible API. Local cache opens immediately; sync/prefetch runs in the background. Current plugin version is in `freshrss.koplugin/_meta.lua` (e.g. v0.9.1). Remote: `https://github.com/monk-blade/freshrss-koreader.git`.
+Offline-first KOReader plugin that reads FreshRSS via the Google Reader–compatible API. Local cache opens immediately; sync/prefetch runs in the background. Current plugin version is in `freshrss.koplugin/_meta.lua` (e.g. v0.9.2). Remote: `https://github.com/monk-blade/freshrss-koreader.git`.
 
 ## What to edit
 

@@ -1582,7 +1582,8 @@ function Plugin:openArticle(id, nav_ids)
     end
 
     local widget
-    widget = Renderer:articleWidget(article, {
+    local ok_widget, widget_or_err = pcall(function()
+        return Renderer:articleWidget(article, {
         index = index,
         total = #ids,
         prev_id = prev_id,
@@ -1657,7 +1658,16 @@ function Plugin:openArticle(id, nav_ids)
                 end,
             })
         end,
-    })
+        })
+    end)
+    if not ok_widget or not widget_or_err then
+        UIManager:show(InfoMessage:new{
+            text = "Unable to open this article on this device.\n"
+                .. tostring(widget_or_err or "render failed"),
+        })
+        return
+    end
+    widget = widget_or_err
     self.viewer = widget
     UIManager:show(widget, "ui")
     self:restoreScrollPosition(id, widget)

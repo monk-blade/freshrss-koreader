@@ -108,10 +108,14 @@ describe("FreshRSS list_fonts helpers", function()
 
     it("restores fontmap and evicts remapped faces from Font.faces", function()
         package.loaded["ui/font"] = nil
+        local latin_path = os.tmpname()
+        local guj_path = os.tmpname()
+        local f1 = assert(io.open(latin_path, "wb")); f1:write("x"); f1:close()
+        local f2 = assert(io.open(guj_path, "wb")); f2:write("x"); f2:close()
         local faces = {
             ["NotoSans-Regular.ttf22"] = { realname = "NotoSans-Regular.ttf", fallbacks = { true } },
-            ["/fonts/RobotoCondensed-Regular.ttf22"] = { realname = "/fonts/RobotoCondensed-Regular.ttf", fallbacks = { true } },
-            ["/fonts/NotoSerifGujarati-Regular.ttf22"] = { realname = "/fonts/NotoSerifGujarati-Regular.ttf", fallbacks = { true } },
+            [latin_path .. "22"] = { realname = latin_path, fallbacks = { true } },
+            [guj_path .. "22"] = { realname = guj_path, fallbacks = { true } },
         }
         package.preload["ui/font"] = function()
             return {
@@ -123,19 +127,21 @@ describe("FreshRSS list_fonts helpers", function()
                 faces = faces,
             }
         end
-        ListFonts.saveLatinFont("/fonts/RobotoCondensed-Regular.ttf")
-        ListFonts.saveGujaratiFont("/fonts/NotoSerifGujarati-Regular.ttf")
+        ListFonts.saveLatinFont(latin_path)
+        ListFonts.saveGujaratiFont(guj_path)
         ListFonts.apply()
         local Font = require("ui/font")
-        assert.equals("/fonts/RobotoCondensed-Regular.ttf", Font.fontmap.smallinfofont)
-        assert.equals("/fonts/NotoSerifGujarati-Regular.ttf", Font.fallbacks[2])
+        assert.equals(latin_path, Font.fontmap.smallinfofont)
+        assert.equals(guj_path, Font.fallbacks[2])
         ListFonts.restore()
         assert.equals("NotoSans-Regular.ttf", Font.fontmap.smallinfofont)
         assert.equals("NotoSansCJKsc-Regular.otf", Font.fallbacks[2])
-        assert.is_nil(Font.faces["/fonts/RobotoCondensed-Regular.ttf22"])
-        assert.is_nil(Font.faces["/fonts/NotoSerifGujarati-Regular.ttf22"])
+        assert.is_nil(Font.faces[latin_path .. "22"])
+        assert.is_nil(Font.faces[guj_path .. "22"])
         assert.is_nil(Font.faces["NotoSans-Regular.ttf22"].fallbacks)
         package.preload["ui/font"] = nil
         package.loaded["ui/font"] = nil
+        os.remove(latin_path)
+        os.remove(guj_path)
     end)
 end)

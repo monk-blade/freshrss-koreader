@@ -663,7 +663,11 @@ local function beginJobConnect(job)
 end
 
 local function startSslHandshake(job)
-    local ssl = require("ssl")
+    local ok_ssl, ssl = pcall(require, "ssl")
+    if not ok_ssl or not ssl or not ssl.wrap then
+        failJob(job)
+        return
+    end
     local wrapped, err = ssl.wrap(job.sock, {
         mode = "client",
         protocol = "any",

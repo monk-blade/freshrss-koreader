@@ -30,6 +30,8 @@ function SettingsUI.letterTile(letters, opts)
     opts = opts or {}
     local side = opts.size or Screen:scaleBySize(28)
     local face = Font:getFace("xx_smallinfofont", opts.font_size or 12)
+        or Font:getFace("x_smallinfofont")
+        or Font:getFace("cfont")
     local text = TextWidget:new{
         text = tostring(letters or "??"),
         face = face,
