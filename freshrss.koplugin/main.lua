@@ -543,10 +543,11 @@ function Plugin:buildItemTable()
 
     local items = self:listedArticles()
     -- Dense e-ink glyphs: filled bullet = unread, hollow = read, star = favorite.
-    -- Line 1: markers + title; line 2: feed · time (Menu multilines_forced).
+    -- Line 1: markers + title; line 2: feed · time (ListMenuItem subtitle).
     for _, article in ipairs(items) do
         table.insert(entries, {
-            text = ListFormat.rowText(article, { title = articleTitle(article) }),
+            text = ListFormat.rowTitle(article, { title = articleTitle(article) }),
+            subtitle = ListFormat.rowMandatory(article),
             article_id = article.id,
             callback = function() self:openArticle(article.id) end,
         })

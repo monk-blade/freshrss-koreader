@@ -287,7 +287,7 @@ function Home:buildLayout()
         single_line = false,
         is_enable_shortcut = false,
         items_font_size = list_font_size,
-        items_mandatory_font_size = math.max(12, list_font_size - 4),
+        items_mandatory_font_size = math.max(10, list_font_size - 6),
         item_table = plugin:buildItemTable(),
         list_fonts = plugin.list_fonts,
         show_parent = self,
@@ -328,7 +328,9 @@ function Home:updateList()
     end
     if self.list then
         if self.plugin and self.plugin.list_fonts then
-            self.list.items_font_size = self.plugin.list_fonts.readFontSize()
+            local fs = self.plugin.list_fonts.readFontSize()
+            self.list.items_font_size = fs
+            self.list.items_mandatory_font_size = math.max(10, fs - 6)
         end
         local items = self.plugin:buildItemTable()
         local restore = self.plugin._list_restore

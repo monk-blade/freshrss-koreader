@@ -84,7 +84,13 @@ html, body { margin: 0 !important; padding: 0 !important; }
 body { padding: %dpx %dpx %dpx %dpx !important; line-height: %s; %s}
 body > *:first-child,
 body > *:first-child > *:first-child,
-body > *:first-child > *:first-child > *:first-child {
+body > *:first-child > *:first-child > *:first-child,
+body > *:first-child > *:first-child > *:first-child > *:first-child {
+  margin-top: 0 !important; padding-top: 0 !important;
+}
+body > div:first-child, body > section:first-child, body > article:first-child,
+body > header:first-child, body > main:first-child, body > figure:first-child,
+body > p:first-child {
   margin-top: 0 !important; padding-top: 0 !important;
 }
 p { margin: 0.35em 0; line-height: %s; %s}
@@ -158,6 +164,8 @@ function Renderer.sanitizeHtml(html)
             :gsub("^<%s*[dD][iI][vV][^>]*>%s*<%s*/%s*[dD][iI][vV]%s*>", "")
             :gsub("^<%s*[sS][pP][aA][nN][^>]*>%s*<%s*/%s*[sS][pP][aA][nN]%s*>", "")
             :gsub("^<%s*[dD][iI][vV][^>]*>%s*&nbsp;%s*<%s*/%s*[dD][iI][vV]%s*>", "")
+            :gsub("^<%s*[hH][rR][^>]*/?%s*>", "")
+            :gsub("^<%s*[fF][iI][gG][uU][rR][eE][^>]*>%s*<%s*/%s*[fF][iI][gG][uU][rR][eE]%s*>", "")
             :gsub("^<%s*br%s*/?%s*>", "")
             :gsub("^&nbsp;", "")
             -- Strip leading inline top margin/padding on the first open tag.
@@ -202,6 +210,26 @@ function Renderer.sanitizeHtml(html)
     return body
 end
 
+local function normalizeTitleText(s)
+    s = util.htmlEntitiesToUtf8(tostring(s or ""))
+    s = s:gsub("<[^>]+>", "")
+    s = s:gsub("%s+", " ")
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    return s:lower()
+end
+
+---Drop a leading h1/h2 that repeats the article title (common in feed HTML).
+function Renderer.stripDuplicateLeadingTitle(html, title)
+    html = tostring(html or "")
+    local want = normalizeTitleText(title)
+    if want == "" then return html end
+    local leading = html:match("^%s*<h[12][^>]*>(.-)</h[12]>")
+    if leading and normalizeTitleText(leading) == want then
+        html = html:gsub("^%s*<h[12][^>]*>.-</h[12]>", "", 1)
+    end
+    return html
+end
+
 function Renderer.buildHtmlBody(article, opts)
     opts = opts or {}
     local raw = tostring(article and article.html or "")
@@ -227,6 +255,10 @@ function Renderer.buildHtmlBody(article, opts)
     end
 
     local sanitized = Renderer.sanitizeHtml(prepared)
+    sanitized = Renderer.stripDuplicateLeadingTitle(sanitized, article and article.title)
+    if sanitized ~= prepared then
+        sanitized = Renderer.sanitizeHtml(sanitized)
+    end
     if sanitized == "" then
         local plain = util.htmlToPlainTextIfHtml(raw)
         if plain == "" then
@@ -661,9 +693,9 @@ function ArticleViewer:_buildTitleBar()
         title_multilines = true,
         title_shrink_font_to_fit = false,
         with_bottom_line = true,
-        title_top_padding = Size.padding.tiny,
+        title_top_padding = 0,
         title_subtitle_v_padding = Screen:scaleBySize(1),
-        bottom_v_padding = Size.padding.tiny,
+        bottom_v_padding = 0,
         left_icon = "appbar.menu",
         left_icon_size_ratio = 0.7,
         left_icon_tap_callback = function()

@@ -42,6 +42,18 @@ describe("FreshRSS list_format helpers", function()
         }, now))
     end)
 
+    it("builds row title with unread/star markers", function()
+        assert.equals("● ★ Hello", ListFormat.rowTitle({
+            title = "Hello",
+            unread = true,
+            starred = true,
+        }))
+        assert.equals("○ Done", ListFormat.rowTitle({
+            title = "Done",
+            unread = false,
+        }))
+    end)
+
     it("builds two-line row text with title then feed · time", function()
         local ts = os.time({ year = 2026, month = 7, day = 12, hour = 9, min = 5, sec = 0 })
         local now = os.time({ year = 2026, month = 7, day = 12, hour = 12, min = 0, sec = 0 })

@@ -47,8 +47,8 @@ function ListFormat.rowMandatory(article, now)
     return nil
 end
 
----Two-line list body: "● Title\\nFeed · 12:30".
-function ListFormat.rowText(article, opts)
+---Line 1: unread/read/star markers + title.
+function ListFormat.rowTitle(article, opts)
     opts = opts or {}
     article = article or {}
     local unread_mark = opts.unread_mark or "● "
@@ -56,7 +56,16 @@ function ListFormat.rowText(article, opts)
     local marker = article.unread and unread_mark or read_mark
     local star = article.starred and (opts.star_mark or "★ ") or ""
     local title = tostring(opts.title or article.title or "Untitled")
-    local line1 = marker .. star .. title
+    return marker .. star .. title
+end
+
+---Two-line list body: "● Title\\nFeed · 12:30" (legacy; Menu strips \\n).
+function ListFormat.rowText(article, opts)
+    opts = opts or {}
+    article = article or {}
+    local unread_mark = opts.unread_mark or "● "
+    local read_mark = opts.read_mark or "○ "
+    local line1 = ListFormat.rowTitle(article, opts)
     local sub = ListFormat.rowMandatory(article, opts.now)
     if sub and sub ~= "" then
         return line1 .. "\n" .. sub

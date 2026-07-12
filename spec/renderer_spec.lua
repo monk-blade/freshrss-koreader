@@ -295,6 +295,15 @@ describe("FreshRSS renderer CSS / view settings", function()
         assert.truthy(out:find("color: red", 1, true))
     end)
 
+    it("strips duplicate leading h1 title from article HTML", function()
+        local html = "<h1>Hello World</h1><p>Body</p>"
+        local out = Renderer.stripDuplicateLeadingTitle(html, "Hello World")
+        assert.falsy(out:find("<h1>", 1, true))
+        assert.truthy(out:find("Body", 1, true))
+        local kept = Renderer.stripDuplicateLeadingTitle(html, "Other")
+        assert.truthy(kept:find("<h1>Hello World</h1>", 1, true))
+    end)
+
     it("defaults top and bottom pad to zero in CSS", function()
         local css = Renderer.buildCss({
             justify = false,
