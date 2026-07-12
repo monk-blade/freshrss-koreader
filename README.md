@@ -6,22 +6,24 @@ A lightweight KOReader plugin for reading FreshRSS feeds through the FreshRSS Go
 
 - Offline-first: opens the local cache immediately (no hang on launch)
 - Full-screen home with FreshRSS brand mark (tap to sync) and icon action bar (**Browse / Mark all / Settings**)
-- Denser article list: unread/star markers, **feed · post time** on each row (no keyboard shortcut letters), single-line titles
-- Browse modes: All / Unread / Starred / Feeds / Categories (Feeds list shows **unread counts** from last sync)
+- Denser article list: unread/star markers, **feed · post time** on each row (no keyboard shortcut letters), single-line titles; restores list page after closing an article
+- Browse modes: All / Unread / Starred / Feeds / Categories (Feeds and Categories show **unread counts** from last sync)
+- **List sort** (newest / oldest) and **hide feeds** (long-press a feed; hidden feeds stay out of All/Unread)
+- **Sync scope**: current browse view (default) or always reading list; sync toast names the stream
 - **Cache retention**: max retained articles (500–5000), auto-evict oldest non-starred after sync, Clean cache now, approximate cache size in Settings
-- Separate Settings menu (connection, auto-refresh, mark-read-on-open, sync filter, articles per sync, cache, image caps/timeouts, list fonts/size, queue)
+- Grouped Settings: Connection / Sync / Cache / Appearance / Images / Queue
 - **Mark read on open** (default on); turn off to leave articles unread when opening
-- **List fonts**: Latin (e.g. Roboto Condensed) + Gujarati fallback (e.g. Noto Serif Gujarati) — install fonts in KOReader’s fonts folder, then pick under Settings; **List font size** SpinWidget in Settings
-- Auto-refresh on open **off by default** (opt-in in Settings)
+- **List fonts**: Latin (e.g. Roboto Condensed) + Gujarati fallback (e.g. Noto Serif Gujarati) — install fonts in KOReader’s fonts folder, then pick under Appearance; **List font size** SpinWidget
+- Auto-refresh on open **off by default** (opt-in under Connection)
 - Background sync with a progress strip; pending queue is flushed **before** fetching articles
 - Unread-only sync by default (`xt=read`), with optional “all articles” mode
 - Configurable articles-per-sync cap (50 / 100 / 200 / 300) with continuation paging
 - Tunable image sync: images per article, sync budget, parallelism, max bytes, timeout profile
 - Mark all as read for the current browse stream
-- HTML article viewer with **View settings** (☰: body/title font size SpinWidgets, line height / side·top·bottom spacing SpinWidgets, images, justify) and icon bar: Prev / Unread / Favorite / **Open original** / Next
-- Same viewer body font size, line height, and spacing controls also under main **Settings**
+- HTML article viewer with **View settings** (☰: body/title font size, line height / spacing, images, justify) and icon bar: Prev / Unread / Favorite / **Open original** / Next; session scroll position remembered when leaving an article
+- Same viewer body/title font size, line height, and spacing also under Settings → Appearance
 - Local image download into the cache (MuPDF never fetches remote URLs); orphan images purged when cache is cleaned
-- Favorite / Mark unread with live button state and sync or “queued offline” notifications
+- Favorite / Mark unread with live button state; favorited articles are **pinned on disk** under `favorites/`
 - Pending-action queue UI (human-readable rows / flush / clear) with sync summary toast
 - Dispatcher actions: `freshrss_sync`, `freshrss_flush_queue`, `freshrss_open`
 - Lucide + FreshRSS SVG icons (ISC-licensed Lucide assets)
@@ -36,14 +38,14 @@ In FreshRSS, enable API access and create an API password under the user profile
 https://reader.example/api/greader.php
 ```
 
-For clearer mixed-script article lists, install **Roboto Condensed** and **Noto Serif Gujarati** into KOReader’s fonts directory, then set them under **Settings → List font (Latin / Gujarati)**.
+For clearer mixed-script article lists, install **Roboto Condensed** and **Noto Serif Gujarati** into KOReader’s fonts directory, then set them under **Settings → Appearance → List font (Latin / Gujarati)**.
 
 ## Usage
 
-1. **Tools → FreshRSS** — full-screen list of cached articles (Unread by default). Only the home title-bar **X** (or Back on the list) exits the plugin; closing an article returns to the list.
-2. Tap the **FreshRSS mark** (left of the title) to sync. Tap **Browse** (filter icon) to switch All / Unread / Starred / Feeds / Categories.
-3. Auto-refresh on open is **off** by default (enable under Settings). Use **Mark read on open** to control whether opening marks articles read.
-4. Use the icon bar under the title (**filter** = Browse, **check** = Mark all, **gear** = Settings). Browse mode stays in the title.
+1. **Tools → FreshRSS** — full-screen list of cached articles (Unread by default). Only the home title-bar **X** (or Back on the list) exits the plugin; closing an article returns to the list (same page).
+2. Tap the **FreshRSS mark** (left of the title) to sync the current view (or reading list if that scope is set). Tap **Browse** (filter icon) to switch All / Unread / Starred / Feeds / Categories.
+3. Auto-refresh on open is **off** by default (enable under Settings → Connection). Use **Mark read on open** to control whether opening marks articles read.
+4. Use the icon bar under the title (**filter** = Browse, **check** = Mark all, **gear** = Settings). Browse mode stays in the title. Long-press a feed in Feeds to hide/unhide it from All/Unread.
 5. In an article: tap the **☰** menu for View settings; use the icon bar for Prev / Mark unread / Favorite / Open original / Next.
 
 ## Development and tests

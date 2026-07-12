@@ -37,6 +37,17 @@ local function articleFromRaw(raw, old)
     old = old or {}
     local server_unread = not hasCategory(raw.categories, READ_STATE)
     local server_starred = hasCategory(raw.categories, STARRED_STATE)
+    local published = raw.published
+    local updated = raw.updated
+    -- Prefer updated, then published, then crawlTimeMsec (ms) so list dates always work.
+    if updated == nil or updated == "" then updated = published end
+    if (updated == nil or updated == "") and raw.crawlTimeMsec then
+        local ms = tonumber(raw.crawlTimeMsec)
+        if ms and ms > 0 then
+            updated = ms > 1e12 and math.floor(ms / 1000) or ms
+        end
+    end
+    if published == nil or published == "" then published = updated end
     return {
         id = tostring(raw.id or raw.crawlTimeMsec or ""),
         title = raw.title or "Untitled",
@@ -44,8 +55,8 @@ local function articleFromRaw(raw, old)
         feed_title = raw.origin and raw.origin.title or "FreshRSS",
         feed_id = raw.origin and raw.origin.streamId or old.feed_id,
         url = raw.alternate and raw.alternate[1] and raw.alternate[1].href,
-        published = raw.published,
-        updated = raw.updated,
+        published = published,
+        updated = updated,
         html = raw.summary and raw.summary.content or raw.content and raw.content.content or "",
         unread = server_unread and (old.unread ~= false),
         starred = server_starred or old.starred == true,
@@ -59,6 +70,28 @@ end
 
 function Sync:new(cache, settings)
     return setmetatable({ cache = cache, settings = settings }, self)
+end
+
+Sync.SCOPE_CURRENT = "current_view"
+Sync.SCOPE_READING_LIST = "reading_list"
+Sync.READING_LIST = "user/-/state/com.google/reading-list"
+Sync.STARRED = "user/-/state/com.google/starred"
+
+function Sync.readSyncScope(settings)
+    local value = settings and settings.readSetting and settings:readSetting("freshrss_sync_scope")
+    if value == Sync.SCOPE_READING_LIST then
+        return Sync.SCOPE_READING_LIST
+    end
+    return Sync.SCOPE_CURRENT
+end
+
+function Sync.cycleSyncScope(settings)
+    local next_scope = Sync.readSyncScope(settings) == Sync.SCOPE_READING_LIST
+        and Sync.SCOPE_CURRENT
+        or Sync.SCOPE_READING_LIST
+    settings:saveSetting("freshrss_sync_scope", next_scope)
+    if settings.flush then settings:flush() end
+    return next_scope
 end
 
 function Sync:syncOptions(browse)
@@ -85,7 +118,8 @@ function Sync:syncOptions(browse)
         max_articles = max,
         exclude_read = exclude_read,
         page_size = math.min(PAGE_SIZE, max),
-        stream_id = self:streamIdForBrowse(browse),
+        stream_id = self:resolveStreamId(browse),
+        sync_scope = Sync.readSyncScope(self.settings),
     }
 end
 
@@ -93,13 +127,65 @@ function Sync:streamIdForBrowse(browse)
     browse = browse or {}
     local mode = browse.mode or "unread"
     if mode == "starred" then
-        return "user/-/state/com.google/starred"
+        return Sync.STARRED
     elseif mode == "feed" and browse.feed_id and browse.feed_id ~= "" then
         return browse.feed_id
     elseif mode == "label" and browse.label and browse.label ~= "" then
         return browse.label
     end
-    return "user/-/state/com.google/reading-list"
+    return Sync.READING_LIST
+end
+
+---Honor freshrss_sync_scope: current_view (default) vs always reading-list.
+function Sync:resolveStreamId(browse)
+    if Sync.readSyncScope(self.settings) == Sync.SCOPE_READING_LIST then
+        return Sync.READING_LIST
+    end
+    return self:streamIdForBrowse(browse)
+end
+
+---Human label for sync toast / progress (feed title, category, Starred, Reading list).
+function Sync.streamLabel(browse, stream_id, cache)
+    browse = browse or {}
+    local sid = tostring(stream_id or "")
+    if sid == Sync.STARRED or browse.mode == "starred" then
+        return "Starred"
+    end
+    if sid == Sync.READING_LIST or sid == "" then
+        return "Reading list"
+    end
+    if browse.mode == "label" and browse.label then
+        local name = tostring(browse.label):gsub("^user/%-/label/", "")
+        return name ~= "" and name or "Category"
+    end
+    if browse.mode == "feed" and browse.feed_id then
+        if cache and cache.getMeta then
+            local meta = cache:getMeta()
+            local subs = meta.subscriptions and meta.subscriptions.subscriptions or {}
+            for _, sub in ipairs(subs) do
+                local id = sub.id or sub.feedId
+                if id == browse.feed_id then
+                    return sub.title or tostring(id)
+                end
+            end
+        end
+        return tostring(browse.feed_id)
+    end
+    -- Feed id without browse context (e.g. scope forced reading-list already handled).
+    if sid:find("feed/", 1, true) and cache and cache.getMeta then
+        local meta = cache:getMeta()
+        local subs = meta.subscriptions and meta.subscriptions.subscriptions or {}
+        for _, sub in ipairs(subs) do
+            local id = sub.id or sub.feedId
+            if tostring(id) == sid then
+                return sub.title or sid
+            end
+        end
+    end
+    if sid:find("user/-/label/", 1, true) then
+        return sid:gsub("^user/%-/label/", "")
+    end
+    return "Reading list"
 end
 
 -- Fetch stream pages until continuation ends or max_articles is reached.
@@ -260,6 +346,7 @@ function Sync:refreshAfterLogin(api, stream_id, on_progress, browse)
         exclude_read = opts.exclude_read,
         max_articles = opts.max_articles,
         stream_id = opts.stream_id,
+        stream_label = Sync.streamLabel(browse, opts.stream_id, self.cache),
         flushed = flush_stats.flushed,
         flush_failed = flush_stats.failed,
         images_downloaded = img_stats and img_stats.downloaded or 0,
@@ -351,7 +438,5 @@ Sync._labelsFromCategories = labelsFromCategories
 Sync.DEFAULT_ARTICLE_CAP = DEFAULT_ARTICLE_CAP
 Sync.ARTICLE_CAPS = { 50, 100, 200, 300 }
 Sync.MAX_SYNC_IMAGES = MAX_SYNC_IMAGES
-Sync.READING_LIST = "user/-/state/com.google/reading-list"
-Sync.STARRED = "user/-/state/com.google/starred"
 
 return Sync

@@ -83,6 +83,8 @@ function Plugin:init()
     self.browse_picker = nil
     self.viewer = nil
     self.syncing = false
+    self._list_restore = nil -- { page = n, article_id = id }
+    self._scroll_memory = {} -- article_id → scroll ratio 0..1
     self:onDispatcherRegisterActions()
     self:registerMenuEntries()
 end
@@ -222,10 +224,59 @@ function Plugin:setBrowseState(state)
         self.settings:delSetting("freshrss_browse_label")
     end
     self.settings:flush()
+    self._list_restore = nil
 end
 
 function Plugin:currentStreamId()
-    return self.sync:streamIdForBrowse(self:browseState())
+    return self.sync:resolveStreamId(self:browseState())
+end
+
+function Plugin:syncScopeLabel()
+    return Sync.readSyncScope(self.settings) == Sync.SCOPE_READING_LIST
+        and "Sync scope: reading list"
+        or "Sync scope: current view"
+end
+
+function Plugin:rememberListPosition()
+    local list = self.home and self.home.list
+    if not list then return end
+    self._list_restore = {
+        page = tonumber(list.page) or 1,
+        article_id = nil,
+    }
+end
+
+function Plugin:rememberScrollPosition(article_id, viewer)
+    article_id = tostring(article_id or "")
+    if article_id == "" or not viewer or not viewer.html_widget then return end
+    local box = viewer.html_widget.htmlbox_widget
+    if not box or not box.page_count or box.page_count < 1 then return end
+    local page = tonumber(box.page_number) or 1
+    local ratio = (page - 1) / math.max(1, box.page_count)
+    self._scroll_memory[article_id] = ratio
+    -- Cap session map size.
+    local n = 0
+    for _ in pairs(self._scroll_memory) do n = n + 1 end
+    if n > 50 then
+        local drop
+        for id in pairs(self._scroll_memory) do
+            if id ~= article_id then drop = id; break end
+        end
+        if drop then self._scroll_memory[drop] = nil end
+    end
+end
+
+function Plugin:restoreScrollPosition(article_id, viewer)
+    article_id = tostring(article_id or "")
+    local ratio = self._scroll_memory[article_id]
+    if not ratio or not viewer or not viewer.html_widget then return end
+    if viewer.html_widget.scrollToRatio then
+        UIManager:nextTick(function()
+            if self.viewer == viewer and viewer.html_widget and viewer.html_widget.scrollToRatio then
+                viewer.html_widget:scrollToRatio(ratio)
+            end
+        end)
+    end
 end
 
 function Plugin:openHome()
@@ -317,9 +368,10 @@ end
 function Plugin:startSync(interactive)
     if self.syncing then return end
     self.syncing = true
-    Status:show(STAGE_LABELS.login, 0.05)
     local browse = self:browseState()
-    local stream_id = self.sync:streamIdForBrowse(browse)
+    local stream_id = self.sync:resolveStreamId(browse)
+    local stream_label = Sync.streamLabel(browse, stream_id, self.cache)
+    Status:show("Sync · " .. stream_label, 0.05)
 
     local function done(ok, result)
         self.syncing = false
@@ -337,7 +389,8 @@ function Plugin:startSync(interactive)
         local mode = (result and result.exclude_read) and "unread" or "all"
         local flushed = result and result.flushed or 0
         local failed = result and result.flush_failed or 0
-        local msg = string.format("Updated · %d fetched (%s) · %d unread", fetched, mode, unread)
+        local label = result and result.stream_label or stream_label
+        local msg = string.format("%s · %d fetched (%s) · %d unread", label, fetched, mode, unread)
         if flushed > 0 or failed > 0 then
             msg = msg .. string.format(" · queue %d ok / %d failed", flushed, failed)
         end
@@ -404,6 +457,9 @@ function Plugin:listedArticles()
     return self.cache:listByMode(list_mode, {
         feed_id = browse.feed_id,
         label = browse.label,
+        sort = Cache.readListSort(self.settings),
+        hidden_feeds = Cache.readHiddenFeeds(self.settings),
+        apply_hidden = (mode == "all" or mode == "unread"),
     })
 end
 
@@ -432,6 +488,10 @@ function Plugin:buildItemTable()
             for _, sub in ipairs(subs) do
                 local sid = sub.id or sub.feedId
                 local title = sub.title or sid or "Feed"
+                local hidden = Cache.isFeedHidden(self.settings, sid)
+                if hidden then
+                    title = title .. " · Hidden"
+                end
                 local count = self.cache:unreadCountForStream(sid)
                 local mandatory
                 if count ~= nil then
@@ -444,6 +504,14 @@ function Plugin:buildItemTable()
                         self:setBrowseState({ mode = "feed", feed_id = sid })
                         self:showCached(true)
                         self:requestSync()
+                    end,
+                    hold_callback = function()
+                        local now_hidden = Cache.toggleHiddenFeed(self.settings, sid)
+                        Notification:notify(
+                            now_hidden and "Feed hidden from All/Unread" or "Feed shown in All/Unread",
+                            Notification.SOURCE_ALWAYS_SHOW
+                        )
+                        self:showCached(true)
                     end,
                 })
             end
@@ -468,8 +536,14 @@ function Plugin:buildItemTable()
             })
         else
             for _, label in ipairs(labels) do
+                local count = self.cache:unreadCountForStream(label)
+                local mandatory
+                if count ~= nil then
+                    mandatory = tostring(count)
+                end
                 table.insert(entries, {
                     text = labelDisplayName(label),
+                    mandatory = mandatory,
                     callback = function()
                         self:setBrowseState({ mode = "label", label = label })
                         self:showCached(true)
@@ -509,6 +583,7 @@ function Plugin:buildItemTable()
         table.insert(entries, {
             text = marker .. star .. articleTitle(article),
             mandatory = ListFormat.rowMandatory(article),
+            article_id = article.id,
             callback = function() self:openArticle(article.id) end,
         })
     end
@@ -621,7 +696,11 @@ function Plugin:showListFontPicker(kind)
                 self.list_font_menu = nil
                 ListFonts.apply()
                 if self.home then self.home:updateList() end
-                self:showSettingsMenu()
+                if self.appearance_menu then
+                    self:showAppearanceSettings()
+                else
+                    self:showSettingsMenu()
+                end
             end,
         },
     }
@@ -640,7 +719,11 @@ function Plugin:showListFontPicker(kind)
                 self.list_font_menu = nil
                 ListFonts.apply()
                 if self.home then self.home:updateList() end
-                self:showSettingsMenu()
+                if self.appearance_menu then
+                    self:showAppearanceSettings()
+                else
+                    self:showSettingsMenu()
+                end
             end,
         })
     end
@@ -655,24 +738,51 @@ function Plugin:showListFontPicker(kind)
         covers_fullscreen = true,
         close_callback = function()
             self.list_font_menu = nil
-            if self.settings_menu then self:showSettingsMenu() end
+            if self.appearance_menu then
+                self:showAppearanceSettings()
+            elseif self.settings_menu then
+                self:showSettingsMenu()
+            end
         end,
     }
     UIManager:show(self.list_font_menu, "ui")
 end
 
-function Plugin:showSettingsMenu()
+function Plugin:closeSettingsSubmenu(menu_key)
+    if menu_key and self[menu_key] then
+        UIManager:close(self[menu_key])
+        self[menu_key] = nil
+    end
+    self:showSettingsMenu()
+end
+
+function Plugin:showSettingsSubmenu(menu_key, title, entries)
+    if self[menu_key] then
+        self[menu_key]:switchItemTable(title, entries)
+        return
+    end
+    self[menu_key] = Menu:new{
+        title = title,
+        item_table = entries,
+        is_popout = false,
+        is_borderless = true,
+        covers_fullscreen = true,
+        close_callback = function()
+            self[menu_key] = nil
+            if self.settings_menu then
+                self:showSettingsMenu()
+            end
+        end,
+    }
+    UIManager:show(self[menu_key], "ui")
+end
+
+function Plugin:showConnectionSettings()
     local auto = self:autoRefreshEnabled()
-    local unread_only = self:syncUnreadOnly()
     local mark_on_open = self:markReadOnOpen()
-    local pending = #self.cache:queuedActions()
-    local cache_size = Cache.formatSize(self.cache:approxSizeBytes())
-    ListFonts.maybeShowMissingHint(function(msg)
-        UIManager:show(InfoMessage:new{ text = msg, timeout = 6 })
-    end)
-    local entries = {
+    self:showSettingsSubmenu("connection_menu", "Connection", {
         {
-            text = "Connection…",
+            text = "API connection…",
             callback = function() self:showSetup() end,
         },
         {
@@ -680,7 +790,7 @@ function Plugin:showSettingsMenu()
             callback = function()
                 self.settings:saveSetting("freshrss_auto_refresh", not auto)
                 self.settings:flush()
-                self:showSettingsMenu()
+                self:showConnectionSettings()
             end,
         },
         {
@@ -688,29 +798,57 @@ function Plugin:showSettingsMenu()
             callback = function()
                 self.settings:saveSetting("freshrss_mark_read_on_open", not mark_on_open)
                 self.settings:flush()
-                self:showSettingsMenu()
+                self:showConnectionSettings()
             end,
         },
+    })
+end
+
+function Plugin:showSyncSettings()
+    local unread_only = self:syncUnreadOnly()
+    local sort = Cache.readListSort(self.settings)
+    self:showSettingsSubmenu("sync_menu", "Sync", {
         {
             text = unread_only and "Sync filter: unread only" or "Sync filter: all articles",
             callback = function()
                 self.settings:saveSetting("freshrss_sync_unread_only", not unread_only)
                 self.settings:flush()
-                self:showSettingsMenu()
+                self:showSyncSettings()
+            end,
+        },
+        {
+            text = self:syncScopeLabel(),
+            callback = function()
+                Sync.cycleSyncScope(self.settings)
+                self:showSyncSettings()
             end,
         },
         {
             text = "Articles per sync: " .. tostring(self:articlesPerSync()),
             callback = function()
                 self:cycleArticlesPerSync()
-                self:showSettingsMenu()
+                self:showSyncSettings()
             end,
         },
+        {
+            text = sort == Cache.SORT_OLDEST and "List sort: oldest first" or "List sort: newest first",
+            callback = function()
+                Cache.cycleListSort(self.settings)
+                if self.home then self.home:updateList() end
+                self:showSyncSettings()
+            end,
+        },
+    })
+end
+
+function Plugin:showCacheSettings()
+    local cache_size = Cache.formatSize(self.cache:approxSizeBytes())
+    self:showSettingsSubmenu("cache_menu", "Cache", {
         {
             text = "Cache retain articles: " .. tostring(Cache.readMaxRetained(self.settings)),
             callback = function()
                 Cache.cycleMaxRetained(self.settings)
-                self:showSettingsMenu()
+                self:showCacheSettings()
             end,
         },
         {
@@ -725,140 +863,19 @@ function Plugin:showSettingsMenu()
                     ok_text = "Clean",
                     ok_callback = function()
                         self:cleanCacheNow()
-                        self:showSettingsMenu()
+                        self:showCacheSettings()
                     end,
                 })
             end,
         },
-        {
-            text = "Viewer font size: " .. tostring(Renderer.readFontSize()),
-            callback = function()
-                UIManager:show(SpinWidget:new{
-                    title_text = "Font size",
-                    value = Renderer.readFontSize(),
-                    value_min = Renderer.FONT_SIZE_MIN,
-                    value_max = Renderer.FONT_SIZE_MAX,
-                    default_value = Renderer.DEFAULT_FONT_SIZE,
-                    ok_always_enabled = true,
-                    keep_shown_on_apply = true,
-                    callback = function(spin)
-                        Renderer.saveFontSize(spin.value)
-                        self:showSettingsMenu()
-                    end,
-                })
-            end,
-        },
-        {
-            text = "Viewer line height: " .. Renderer.formatLineHeight(Renderer.readLineHeight()),
-            callback = function()
-                Renderer.showSpacingSpin({
-                    title = "Line height",
-                    info_text = "Article body line spacing",
-                    value = Renderer.readLineHeight(),
-                    value_min = Renderer.LINE_HEIGHT_MIN,
-                    value_max = Renderer.LINE_HEIGHT_MAX,
-                    value_step = Renderer.LINE_HEIGHT_STEP,
-                    precision = "%.2f",
-                    default_value = Renderer.DEFAULT_LINE_HEIGHT,
-                    callback = function(value)
-                        Renderer.saveLineHeight(value)
-                        self:showSettingsMenu()
-                    end,
-                })
-            end,
-        },
-        {
-            text = "Viewer side padding: " .. Renderer.formatPad(Renderer.readPadSide()),
-            callback = function()
-                Renderer.showSpacingSpin({
-                    title = "Side padding",
-                    info_text = "Left and right body padding (em)",
-                    value = Renderer.readPadSide(),
-                    value_min = Renderer.PAD_MIN,
-                    value_max = Renderer.PAD_MAX,
-                    value_step = Renderer.PAD_STEP,
-                    precision = "%.1f",
-                    default_value = Renderer.DEFAULT_PAD_SIDE,
-                    callback = function(value)
-                        Renderer.savePadSide(value)
-                        self:showSettingsMenu()
-                    end,
-                })
-            end,
-        },
-        {
-            text = "Viewer top margin: " .. Renderer.formatPad(Renderer.readPadTop()),
-            callback = function()
-                Renderer.showSpacingSpin({
-                    title = "Top margin",
-                    info_text = "Top body padding (em)",
-                    value = Renderer.readPadTop(),
-                    value_min = Renderer.PAD_MIN,
-                    value_max = Renderer.PAD_MAX,
-                    value_step = Renderer.PAD_STEP,
-                    precision = "%.1f",
-                    default_value = Renderer.DEFAULT_PAD_TOP,
-                    callback = function(value)
-                        Renderer.savePadTop(value)
-                        self:showSettingsMenu()
-                    end,
-                })
-            end,
-        },
-        {
-            text = "Viewer bottom margin: " .. Renderer.formatPad(Renderer.readPadBottom()),
-            callback = function()
-                Renderer.showSpacingSpin({
-                    title = "Bottom margin",
-                    info_text = "Bottom body padding (em)",
-                    value = Renderer.readPadBottom(),
-                    value_min = Renderer.PAD_MIN,
-                    value_max = Renderer.PAD_MAX,
-                    value_step = Renderer.PAD_STEP,
-                    precision = "%.1f",
-                    default_value = Renderer.DEFAULT_PAD_BOTTOM,
-                    callback = function(value)
-                        Renderer.savePadBottom(value)
-                        self:showSettingsMenu()
-                    end,
-                })
-            end,
-        },
-        {
-            text = "Images per article: " .. tostring(Images.readMaxImages()),
-            callback = function()
-                Images.cycleMaxImages()
-                self:showSettingsMenu()
-            end,
-        },
-        {
-            text = "Sync image budget: " .. tostring(Images.readSyncBudget()),
-            callback = function()
-                Images.cycleSyncBudget()
-                self:showSettingsMenu()
-            end,
-        },
-        {
-            text = "Image download parallel: " .. tostring(Images.readMaxParallel()),
-            callback = function()
-                Images.cycleMaxParallel()
-                self:showSettingsMenu()
-            end,
-        },
-        {
-            text = "Image max size: " .. Images.formatMaxBytesLabel(Images.readMaxBytes()),
-            callback = function()
-                Images.cycleMaxBytes()
-                self:showSettingsMenu()
-            end,
-        },
-        {
-            text = "Image timeouts: " .. Images.readTimeoutProfile(),
-            callback = function()
-                Images.cycleTimeoutProfile()
-                self:showSettingsMenu()
-            end,
-        },
+    })
+end
+
+function Plugin:showAppearanceSettings()
+    ListFonts.maybeShowMissingHint(function(msg)
+        UIManager:show(InfoMessage:new{ text = msg, timeout = 6 })
+    end)
+    self:showSettingsSubmenu("appearance_menu", "Appearance", {
         {
             text = self:listFontLabel("latin"),
             callback = function() self:showListFontPicker("latin") end,
@@ -881,13 +898,191 @@ function Plugin:showSettingsMenu()
                     callback = function(spin)
                         ListFonts.saveFontSize(spin.value)
                         if self.home then self.home:updateList() end
-                        self:showSettingsMenu()
+                        self:showAppearanceSettings()
                     end,
                 })
             end,
         },
         {
-            text = string.format("Pending actions: %d", pending),
+            text = "Viewer font size: " .. tostring(Renderer.readFontSize()),
+            callback = function()
+                UIManager:show(SpinWidget:new{
+                    title_text = "Font size",
+                    value = Renderer.readFontSize(),
+                    value_min = Renderer.FONT_SIZE_MIN,
+                    value_max = Renderer.FONT_SIZE_MAX,
+                    default_value = Renderer.DEFAULT_FONT_SIZE,
+                    ok_always_enabled = true,
+                    keep_shown_on_apply = true,
+                    callback = function(spin)
+                        Renderer.saveFontSize(spin.value)
+                        self:showAppearanceSettings()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Title font size: " .. tostring(Renderer.readTitleFontSize()),
+            callback = function()
+                UIManager:show(SpinWidget:new{
+                    title_text = "Title font size",
+                    value = Renderer.readTitleFontSize(),
+                    value_min = Renderer.FONT_SIZE_MIN,
+                    value_max = Renderer.FONT_SIZE_MAX,
+                    default_value = Renderer.DEFAULT_TITLE_FONT_SIZE,
+                    ok_always_enabled = true,
+                    keep_shown_on_apply = true,
+                    callback = function(spin)
+                        Renderer.saveTitleFontSize(spin.value)
+                        self:showAppearanceSettings()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer line height: " .. Renderer.formatLineHeight(Renderer.readLineHeight()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Line height",
+                    info_text = "Article body line spacing",
+                    value = Renderer.readLineHeight(),
+                    value_min = Renderer.LINE_HEIGHT_MIN,
+                    value_max = Renderer.LINE_HEIGHT_MAX,
+                    value_step = Renderer.LINE_HEIGHT_STEP,
+                    precision = "%.2f",
+                    default_value = Renderer.DEFAULT_LINE_HEIGHT,
+                    callback = function(value)
+                        Renderer.saveLineHeight(value)
+                        self:showAppearanceSettings()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer side padding: " .. Renderer.formatPad(Renderer.readPadSide()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Side padding",
+                    info_text = "Left and right body padding (em)",
+                    value = Renderer.readPadSide(),
+                    value_min = Renderer.PAD_MIN,
+                    value_max = Renderer.PAD_MAX,
+                    value_step = Renderer.PAD_STEP,
+                    precision = "%.1f",
+                    default_value = Renderer.DEFAULT_PAD_SIDE,
+                    callback = function(value)
+                        Renderer.savePadSide(value)
+                        self:showAppearanceSettings()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer top margin: " .. Renderer.formatPad(Renderer.readPadTop()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Top margin",
+                    info_text = "Top body padding (em)",
+                    value = Renderer.readPadTop(),
+                    value_min = Renderer.PAD_MIN,
+                    value_max = Renderer.PAD_MAX,
+                    value_step = Renderer.PAD_STEP,
+                    precision = "%.1f",
+                    default_value = Renderer.DEFAULT_PAD_TOP,
+                    callback = function(value)
+                        Renderer.savePadTop(value)
+                        self:showAppearanceSettings()
+                    end,
+                })
+            end,
+        },
+        {
+            text = "Viewer bottom margin: " .. Renderer.formatPad(Renderer.readPadBottom()),
+            callback = function()
+                Renderer.showSpacingSpin({
+                    title = "Bottom margin",
+                    info_text = "Bottom body padding (em)",
+                    value = Renderer.readPadBottom(),
+                    value_min = Renderer.PAD_MIN,
+                    value_max = Renderer.PAD_MAX,
+                    value_step = Renderer.PAD_STEP,
+                    precision = "%.1f",
+                    default_value = Renderer.DEFAULT_PAD_BOTTOM,
+                    callback = function(value)
+                        Renderer.savePadBottom(value)
+                        self:showAppearanceSettings()
+                    end,
+                })
+            end,
+        },
+    })
+end
+
+function Plugin:showImageSettings()
+    self:showSettingsSubmenu("images_menu", "Images", {
+        {
+            text = "Images per article: " .. tostring(Images.readMaxImages()),
+            callback = function()
+                Images.cycleMaxImages()
+                self:showImageSettings()
+            end,
+        },
+        {
+            text = "Sync image budget: " .. tostring(Images.readSyncBudget()),
+            callback = function()
+                Images.cycleSyncBudget()
+                self:showImageSettings()
+            end,
+        },
+        {
+            text = "Image download parallel: " .. tostring(Images.readMaxParallel()),
+            callback = function()
+                Images.cycleMaxParallel()
+                self:showImageSettings()
+            end,
+        },
+        {
+            text = "Image max size: " .. Images.formatMaxBytesLabel(Images.readMaxBytes()),
+            callback = function()
+                Images.cycleMaxBytes()
+                self:showImageSettings()
+            end,
+        },
+        {
+            text = "Image timeouts: " .. Images.readTimeoutProfile(),
+            callback = function()
+                Images.cycleTimeoutProfile()
+                self:showImageSettings()
+            end,
+        },
+    })
+end
+
+function Plugin:showSettingsMenu()
+    local pending = #self.cache:queuedActions()
+    local entries = {
+        {
+            text = "Connection…",
+            callback = function() self:showConnectionSettings() end,
+        },
+        {
+            text = "Sync…",
+            callback = function() self:showSyncSettings() end,
+        },
+        {
+            text = "Cache…",
+            callback = function() self:showCacheSettings() end,
+        },
+        {
+            text = "Appearance…",
+            callback = function() self:showAppearanceSettings() end,
+        },
+        {
+            text = "Images…",
+            callback = function() self:showImageSettings() end,
+        },
+        {
+            text = string.format("Queue… (%d pending)", pending),
             callback = function() self:showQueueMenu() end,
         },
     }
@@ -903,6 +1098,11 @@ function Plugin:showSettingsMenu()
         covers_fullscreen = true,
         close_callback = function()
             self.settings_menu = nil
+            self.connection_menu = nil
+            self.sync_menu = nil
+            self.cache_menu = nil
+            self.appearance_menu = nil
+            self.images_menu = nil
             if self.home then
                 ListFonts.apply()
                 self:showCached()
@@ -1051,6 +1251,9 @@ function Plugin:showCached(rebuild_chrome)
     if self.list_fonts then
         self.list_fonts.apply()
     end
+    if rebuild_chrome then
+        self._list_restore = nil
+    end
     if self.home and not rebuild_chrome then
         if self.home.title_bar then
             self.home.title_bar:setTitle(self:menuTitle())
@@ -1136,6 +1339,11 @@ function Plugin:openArticle(id, nav_ids)
     local article = self.cache:getArticle(id)
     if not article then return end
 
+    self:rememberListPosition()
+    if self._list_restore then
+        self._list_restore.article_id = id
+    end
+
     -- Use a stable ordered snapshot for this viewer session. Opening marks the
     -- article read; re-querying an unread browse list would drop it and break
     -- Prev / shift Next / stale N/M indices.
@@ -1161,6 +1369,7 @@ function Plugin:openArticle(id, nav_ids)
 
     local function reopen(neighbor_id)
         if self.viewer then
+            self:rememberScrollPosition(id, self.viewer)
             UIManager:close(self.viewer)
             self.viewer = nil
         end
@@ -1205,6 +1414,9 @@ function Plugin:openArticle(id, nav_ids)
         image_map = image_map,
         html_resource_directory = resource_dir,
         on_back = function()
+            if widget then
+                self:rememberScrollPosition(id, widget)
+            end
             -- Viewer X / Back: only clear viewer and refresh list — never rebuild/close Home.
             self.viewer = nil
             self:refreshHomeAfterViewer()
@@ -1270,6 +1482,7 @@ function Plugin:openArticle(id, nav_ids)
     })
     self.viewer = widget
     UIManager:show(widget, "ui")
+    self:restoreScrollPosition(id, widget)
     -- Viewer first, then optionally mark read and download images.
     UIManager:nextTick(function()
         if mark_on_open then

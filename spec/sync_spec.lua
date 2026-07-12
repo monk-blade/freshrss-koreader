@@ -254,6 +254,22 @@ describe("FreshRSS state synchronization", function()
         assert.equals("user/-/label/News", sync:streamIdForBrowse({ mode = "label", label = "user/-/label/News" }))
     end)
 
+    it("resolves sync scope to current view or always reading-list", function()
+        local stored = { freshrss_sync_scope = "current_view" }
+        local settings = {
+            readSetting = function(_, key) return stored[key] end,
+            saveSetting = function(_, key, value) stored[key] = value end,
+            flush = function() end,
+        }
+        local sync = Sync:new({}, settings)
+        assert.equals("feed/9", sync:resolveStreamId({ mode = "feed", feed_id = "feed/9" }))
+        assert.equals(Sync.SCOPE_READING_LIST, Sync.cycleSyncScope(settings))
+        assert.equals(Sync.READING_LIST, sync:resolveStreamId({ mode = "feed", feed_id = "feed/9" }))
+        assert.equals("Reading list", Sync.streamLabel({ mode = "unread" }, Sync.READING_LIST))
+        assert.equals("Starred", Sync.streamLabel({ mode = "starred" }, Sync.STARRED))
+        assert.equals("News", Sync.streamLabel({ mode = "label", label = "user/-/label/News" }, "user/-/label/News"))
+    end)
+
     it("stores feed id and labels from the stream payload", function()
         local article = Sync._articleFromRaw({
             id = "1",
@@ -266,6 +282,24 @@ describe("FreshRSS state synchronization", function()
         })
         assert.equals("feed/42", article.feed_id)
         assert.same({ "user/-/label/News" }, article.labels)
+    end)
+
+    it("falls back updated from published or crawlTimeMsec", function()
+        local from_published = Sync._articleFromRaw({
+            id = "1",
+            title = "A",
+            published = 1700000000,
+            categories = {},
+        })
+        assert.equals(1700000000, from_published.updated)
+        assert.equals(1700000000, from_published.published)
+        local from_crawl = Sync._articleFromRaw({
+            id = "2",
+            title = "B",
+            crawlTimeMsec = 1700000000000,
+            categories = {},
+        })
+        assert.equals(1700000000, from_crawl.updated)
     end)
 
     it("prefetchImages uses Images.downloadMany with a job list", function()

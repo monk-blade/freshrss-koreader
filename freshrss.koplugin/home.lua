@@ -144,6 +144,7 @@ function Home:reopen()
     UIManager:close(self)
     plugin.home = nil
     plugin.menu = nil
+    plugin._list_restore = nil
     plugin:showCached()
 end
 
@@ -155,7 +156,22 @@ function Home:updateList()
         if self.plugin and self.plugin.list_fonts then
             self.list.items_font_size = self.plugin.list_fonts.readFontSize()
         end
-        self.list:switchItemTable("", self.plugin:buildItemTable())
+        local items = self.plugin:buildItemTable()
+        local restore = self.plugin._list_restore
+        if restore and restore.article_id then
+            self.list:switchItemTable("", items, nil, { article_id = restore.article_id })
+        elseif restore and restore.page then
+            self.list:switchItemTable("", items)
+            local page = tonumber(restore.page) or 1
+            local max_page = tonumber(self.list.page_num) or 1
+            if page > max_page then page = max_page end
+            if page < 1 then page = 1 end
+            if self.list.onGotoPage then
+                self.list:onGotoPage(page)
+            end
+        else
+            self.list:switchItemTable("", items)
+        end
     end
     UIManager:setDirty(self, "ui")
 end

@@ -48,6 +48,36 @@ describe("FreshRSS cache", function()
         assert.equals(0, cache:unreadCount())
     end)
 
+    it("sorts newest or oldest and hides feeds from All/Unread", function()
+        cache:putArticle({ id = "1", title = "A", unread = true, feed_id = "feed/1", updated = 3 })
+        cache:putArticle({ id = "2", title = "B", unread = true, feed_id = "feed/2", updated = 1 })
+        cache:putArticle({ id = "3", title = "C", unread = true, feed_id = "feed/1", updated = 2 })
+        local newest = cache:listByMode("unread", { sort = Cache.SORT_NEWEST })
+        assert.equals("1", newest[1].id)
+        local oldest = cache:listByMode("unread", { sort = Cache.SORT_OLDEST })
+        assert.equals("2", oldest[1].id)
+
+        local stored = {}
+        local settings = {
+            readSetting = function(_, key) return stored[key] end,
+            saveSetting = function(_, key, value) stored[key] = value end,
+            flush = function() end,
+        }
+        assert.is_true(Cache.toggleHiddenFeed(settings, "feed/1"))
+        local hidden = Cache.readHiddenFeeds(settings)
+        assert.is_true(hidden["feed/1"])
+        local filtered = cache:listByMode("unread", {
+            sort = Cache.SORT_NEWEST,
+            hidden_feeds = hidden,
+            apply_hidden = true,
+        })
+        assert.equals(1, #filtered)
+        assert.equals("2", filtered[1].id)
+        -- Feed browse still lists hidden feed articles when not applying hide.
+        assert.equals(2, #cache:listByMode("feed", { feed_id = "feed/1", apply_hidden = false }))
+        assert.is_false(Cache.toggleHiddenFeed(settings, "feed/1"))
+    end)
+
     it("clears the offline queue", function()
         cache:queue({ id = "a", action = "read", state = true })
         cache:queue({ id = "b", action = "starred", state = true })
@@ -148,6 +178,43 @@ describe("FreshRSS cache", function()
         assert.equals("Forever", cache.index["keep-me"].title)
         assert.is_true(cache.index["keep-me"].starred)
         assert.is_true(cache.index["keep-me"].pinned)
+    end)
+
+    it("backfills missing index dates from article JSON", function()
+        local id = "dated-1"
+        local file = assert(io.open(cache:path(id), "w"))
+        file:write(helpers.encode({
+            id = id,
+            title = "T",
+            feed_title = "Feed",
+            published = 1700000000,
+            unread = true,
+        }))
+        file:close()
+        cache.index[id] = { id = id, title = "T", feed_title = "Feed", unread = true }
+        local n = cache:backfillIndexDates()
+        assert.is_true(n >= 1)
+        assert.equals(1700000000, tonumber(cache.index[id].updated))
+        local ListFormat = dofile("./freshrss.koplugin/list_format.lua")
+        local mandatory = ListFormat.rowMandatory(cache.index[id])
+        assert.truthy(mandatory:find("Feed", 1, true))
+        assert.truthy(mandatory:find("·", 1, true))
+    end)
+
+    it("indexes published when updated is missing", function()
+        cache:putArticle({
+            id = "pub-only",
+            title = "P",
+            feed_title = "Sandesh",
+            published = 1700000000,
+            unread = true,
+        })
+        assert.equals(1700000000, tonumber(cache.index["pub-only"].updated))
+        local ListFormat = dofile("./freshrss.koplugin/list_format.lua")
+        assert.equals(
+            "Sandesh · " .. ListFormat.formatArticleDate(1700000000),
+            ListFormat.rowMandatory(cache.index["pub-only"])
+        )
     end)
 
     it("cycles retain caps", function()

@@ -3,6 +3,7 @@ local ListFormat = {}
 
 ---Normalize GReader/FreshRSS timestamps (seconds or milliseconds) to epoch seconds.
 function ListFormat.toEpochSeconds(ts)
+    if ts == nil or ts == "" then return nil end
     local n = tonumber(ts)
     if not n or n <= 0 then return nil end
     -- Milliseconds (common in some GReader payloads)
@@ -32,7 +33,10 @@ end
 -- Menu renders this as mandatory (smaller font than the title).
 function ListFormat.rowMandatory(article, now)
     article = article or {}
-    local date = ListFormat.formatArticleDate(article.updated or article.published, now)
+    local date = ListFormat.formatArticleDate(
+        article.updated or article.published or article.crawlTimeMsec,
+        now
+    )
     local feed = tostring(article.feed_title or "")
     if feed == "" or feed == "nil" then feed = "" end
     if feed ~= "" and date then

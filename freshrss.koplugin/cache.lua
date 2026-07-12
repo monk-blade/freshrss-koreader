@@ -15,6 +15,8 @@ function Cache:new(root)
     end
     -- Rehydrate permanently pinned favorites (survives index wipe / reinstall).
     o:loadPinnedFavorites()
+    -- Older indexes often omitted published/updated; backfill so list shows "feed · date".
+    o:backfillIndexDates()
     return o
 end
 
@@ -22,6 +24,58 @@ function Cache:saveIndex()
     local file = assert(io.open(self.index_path, "w"))
     file:write(json.encode(self.index))
     file:close()
+end
+
+local function articleTimestamp(article)
+    if not article then return nil end
+    local ts = article.updated or article.published or article.crawlTimeMsec
+    if ts == nil or ts == "" then return nil end
+    local n = tonumber(ts)
+    if not n or n <= 0 then return nil end
+    if n > 1e12 then n = math.floor(n / 1000) end
+    return n
+end
+
+function Cache:indexEntryFromArticle(article)
+    local ts = articleTimestamp(article)
+    return {
+        id = tostring(article.id),
+        title = article.title,
+        feed_title = article.feed_title,
+        feed_id = article.feed_id,
+        unread = article.unread,
+        starred = article.starred,
+        updated = ts or article.updated,
+        published = article.published or ts,
+        labels = article.labels,
+        pinned = article.starred and true or nil,
+    }
+end
+
+---Fill missing index timestamps from on-disk article JSON (one-time repair).
+function Cache:backfillIndexDates()
+    local changed = 0
+    for key, item in pairs(self.index) do
+        if key ~= "_queue" and key ~= "_meta" and type(item) == "table" and item.id then
+            if not articleTimestamp(item) then
+                local article = self:getArticle(item.id)
+                local ts = articleTimestamp(article)
+                if ts then
+                    item.updated = ts
+                    item.published = article.published or ts
+                    if article.feed_title and (not item.feed_title or item.feed_title == "") then
+                        item.feed_title = article.feed_title
+                    end
+                    changed = changed + 1
+                end
+            elseif item.published == nil and item.updated ~= nil then
+                item.published = item.updated
+                changed = changed + 1
+            end
+        end
+    end
+    if changed > 0 then self:saveIndex() end
+    return changed
 end
 
 function Cache:path(id)
@@ -77,17 +131,7 @@ function Cache:putArticle(article)
     local file = assert(io.open(self:path(id), "w"))
     file:write(json.encode(article))
     file:close()
-    self.index[id] = {
-        id = id,
-        title = article.title,
-        feed_title = article.feed_title,
-        feed_id = article.feed_id,
-        unread = article.unread,
-        starred = article.starred,
-        updated = article.updated,
-        labels = article.labels,
-        pinned = article.starred and true or nil,
-    }
+    self.index[id] = self:indexEntryFromArticle(article)
     self:saveIndex()
     if article.starred then
         self:pinFavorite(article)
@@ -114,8 +158,77 @@ end
 
 -- mode: all | unread | starred | feed | label
 -- opts: feed_id, label
+Cache.SORT_NEWEST = "newest"
+Cache.SORT_OLDEST = "oldest"
+
+function Cache.readListSort(settings)
+    local value = settings and settings.readSetting and settings:readSetting("freshrss_list_sort")
+    if value == Cache.SORT_OLDEST then
+        return Cache.SORT_OLDEST
+    end
+    return Cache.SORT_NEWEST
+end
+
+function Cache.cycleListSort(settings)
+    local next_sort = Cache.readListSort(settings) == Cache.SORT_OLDEST
+        and Cache.SORT_NEWEST
+        or Cache.SORT_OLDEST
+    settings:saveSetting("freshrss_list_sort", next_sort)
+    if settings.flush then settings:flush() end
+    return next_sort
+end
+
+---Return a set map of hidden feed ids from settings.
+function Cache.readHiddenFeeds(settings)
+    local raw = settings and settings.readSetting and settings:readSetting("freshrss_hidden_feeds")
+    local set = {}
+    if type(raw) == "table" then
+        for k, v in pairs(raw) do
+            if type(k) == "number" and type(v) == "string" then
+                set[v] = true
+            elseif type(k) == "string" and v then
+                set[k] = true
+            end
+        end
+    end
+    return set
+end
+
+function Cache.isFeedHidden(settings, feed_id)
+    feed_id = tostring(feed_id or "")
+    if feed_id == "" then return false end
+    return Cache.readHiddenFeeds(settings)[feed_id] and true or false
+end
+
+function Cache.toggleHiddenFeed(settings, feed_id)
+    feed_id = tostring(feed_id or "")
+    if feed_id == "" then return false end
+    local set = Cache.readHiddenFeeds(settings)
+    local now_hidden
+    if set[feed_id] then
+        set[feed_id] = nil
+        now_hidden = false
+    else
+        set[feed_id] = true
+        now_hidden = true
+    end
+    local list = {}
+    for id in pairs(set) do
+        table.insert(list, id)
+    end
+    table.sort(list)
+    settings:saveSetting("freshrss_hidden_feeds", list)
+    if settings.flush then settings:flush() end
+    return now_hidden
+end
+
 function Cache:listByMode(mode, opts)
     opts = opts or {}
+    local hidden = opts.hidden_feeds
+    local apply_hidden = opts.apply_hidden
+    if apply_hidden == nil then
+        apply_hidden = (mode == "all" or mode == "unread")
+    end
     local result = {}
     for key, item in pairs(self.index) do
         if key ~= "_queue" and key ~= "_meta" and type(item) == "table" and item.id then
@@ -141,12 +254,20 @@ function Cache:listByMode(mode, opts)
             if mode == "all" and opts.feed_id then
                 include = item.feed_id == opts.feed_id
             end
+            if include and apply_hidden and hidden and item.feed_id and hidden[tostring(item.feed_id)] then
+                include = false
+            end
             if include then
                 table.insert(result, item)
             end
         end
     end
-    table.sort(result, function(a, b) return tostring(a.updated or "") > tostring(b.updated or "") end)
+    local sort = opts.sort or Cache.SORT_NEWEST
+    if sort == Cache.SORT_OLDEST then
+        table.sort(result, function(a, b) return tostring(a.updated or "") < tostring(b.updated or "") end)
+    else
+        table.sort(result, function(a, b) return tostring(a.updated or "") > tostring(b.updated or "") end)
+    end
     return result
 end
 
@@ -371,17 +492,9 @@ function Cache:loadPinnedFavorites()
                     local main = assert(io.open(self:path(id), "w"))
                     main:write(json.encode(article))
                     main:close()
-                    self.index[id] = {
-                        id = id,
-                        title = article.title,
-                        feed_title = article.feed_title,
-                        feed_id = article.feed_id,
-                        unread = article.unread,
-                        starred = true,
-                        updated = article.updated,
-                        labels = article.labels,
-                        pinned = true,
-                    }
+                    self.index[id] = self:indexEntryFromArticle(article)
+                    self.index[id].starred = true
+                    self.index[id].pinned = true
                     loaded = loaded + 1
                 end
             end

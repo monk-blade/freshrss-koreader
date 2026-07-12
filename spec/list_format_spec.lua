@@ -35,6 +35,11 @@ describe("FreshRSS list_format helpers", function()
         }, now))
         assert.equals("Solo Feed", ListFormat.rowMandatory({ feed_title = "Solo Feed" }, now))
         assert.equals(date, ListFormat.rowMandatory({ updated = ts }, now))
+        -- published-only and string timestamps still format
+        assert.equals("News · " .. date, ListFormat.rowMandatory({
+            published = tostring(ts),
+            feed_title = "News",
+        }, now))
     end)
 
     it("looks up unread counts by stream id", function()

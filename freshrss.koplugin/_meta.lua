@@ -2,5 +2,5 @@ local _ = require("gettext")
 return {
     name = "freshrss",
     fullname = _("FreshRSS"),
-    description = _([[Browse FreshRSS offline-first (v0.6.2). Reliable offline reading: permanent on-disk favorites, tighter article top spacing (CSS px padding), list/title font size SpinWidgets, cache retention/eviction with starred preserve and orphan image GC, mark-read-on-open toggle, Open original in the viewer, queue flush at sync start, denser list (feed · post time, no shortcut letters), feed unread counts, Latin/Gujarati list fonts, tunable image sync (count/budget/parallel/size/timeouts), and Dispatcher hooks. Auto-refresh on open is off by default.]]),
+    description = _([[Browse FreshRSS offline-first (v0.7.0). Polish + browse power: sync current view or reading list with labeled toasts, list sort, hide feeds, category unread counts, regrouped Settings, list page restore and viewer scroll memory, permanent favorites, px spacing, list/title font sizes, cache retention, mark-read-on-open, Open original, denser list (feed · post time), Latin/Gujarati list fonts, tunable image sync, Dispatcher hooks. Auto-refresh on open is off by default.]]),
 }
