@@ -1415,22 +1415,24 @@ function Plugin:showCached(rebuild_chrome)
 end
 
 function Plugin:refreshHomeAfterViewer()
-    if not self.home then return end
-    if self.list_fonts then
-        self.list_fonts.apply()
-    end
-    if self.home.title_bar then
-        self.home.title_bar:setTitle(self:menuTitle())
-        if self.home.title_bar.setSubTitle then
-            self.home.title_bar:setSubTitle("")
+    if not self.home or self.viewer then return end
+    pcall(function()
+        if self.list_fonts then
+            self.list_fonts.apply()
         end
-    end
-    self.home:updateList()
-    UIManager:setDirty(self.home, "ui")
+        if self.home.title_bar then
+            self.home.title_bar:setTitle(self:menuTitle())
+            if self.home.title_bar.setSubTitle then
+                self.home.title_bar:setSubTitle("")
+            end
+        end
+        self.home:updateList()
+        UIManager:setDirty(self.home, "ui")
+    end)
 end
 
 function Plugin:loadViewerImages(article, viewer)
-    if not viewer or not viewer.show_images then return end
+    if not viewer or viewer ~= self.viewer or not viewer.show_images then return end
     local raw = tostring(article and article.html or "")
     local urls = Images.extractImageUrls(raw)
     if #urls == 0 then return end
@@ -1512,9 +1514,16 @@ function Plugin:openArticle(id, nav_ids)
     end
 
     local function reopen(neighbor_id)
-        if self.viewer then
-            UIManager:close(self.viewer)
+        local old = self.viewer
+        if old then
             self.viewer = nil
+            if old.onClose then
+                -- Prev/next: close without refreshHomeAfterViewer (callbacks cleared).
+                old.callbacks = {}
+                old:onClose()
+            else
+                UIManager:close(old, "flashui")
+            end
         end
         self:openArticle(neighbor_id, ids)
     end

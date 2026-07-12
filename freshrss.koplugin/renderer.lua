@@ -925,9 +925,11 @@ function ArticleViewer:onShowViewSettings()
     if self.font_face then
         font_label = ListFonts.displayName(self.font_face)
     end
-    local panel
     local function reopen()
-        if panel then UIManager:close(panel) end
+        if self.view_settings_panel then
+            UIManager:close(self.view_settings_panel)
+            self.view_settings_panel = nil
+        end
         self:onShowViewSettings()
     end
     local rows = {
@@ -1100,12 +1102,19 @@ function ArticleViewer:onShowViewSettings()
             end,
         },
     }
-    panel = getSettingsUI().showPanel({
+    if self.view_settings_panel then
+        UIManager:close(self.view_settings_panel)
+        self.view_settings_panel = nil
+    end
+    local panel = getSettingsUI().showPanel({
         title = "View settings",
         icons = icons,
         rows = rows,
-        on_close = function() end,
+        on_close = function()
+            self.view_settings_panel = nil
+        end,
     })
+    self.view_settings_panel = panel
     return true
 end
 function ArticleViewer:onShow()
@@ -1265,29 +1274,64 @@ function ArticleViewer:onLookupWord(word, is_sane, boxes, highlight, link, dict_
     end
 end
 
-function ArticleViewer:onClose()
-    -- Close only the viewer — never tear down Home / the article list.
-    UIManager:close(self)
+function ArticleViewer:_releaseHtmlWidget()
+    if self._html_released then return end
+    self._html_released = true
+    local hw = self.html_widget
+    self.html_widget = nil
+    if hw and hw.free then
+        pcall(function() hw:free() end)
+    end
+end
+
+function ArticleViewer:_closeOverlays()
     if self.font_menu then
-        UIManager:close(self.font_menu)
+        pcall(function() UIManager:close(self.font_menu) end)
         self.font_menu = nil
     end
-    if self.html_widget and self.html_widget.free then
-        self.html_widget:free()
-        self.html_widget = nil
+    if self.view_settings_panel then
+        pcall(function() UIManager:close(self.view_settings_panel) end)
+        self.view_settings_panel = nil
     end
-    if self.callbacks.on_back then self.callbacks.on_back() end
+end
+
+function ArticleViewer:onClose()
+    -- Close only the viewer — never tear down Home / the article list.
+    if self._closing then return true end
+    self._closing = true
+
+    -- Stop accepting input while MuPDF / scroll handlers tear down.
+    self.ges_events = nil
+    self.key_events = nil
+
+    local hw = self.html_widget
+    if hw then
+        local box = hw.htmlbox_widget
+        if box and box.unscheduleClearHighlightAndRedraw then
+            pcall(function() box:unscheduleClearHighlightAndRedraw() end)
+        end
+    end
+
+    self:_closeOverlays()
+
+    local on_back = self.callbacks and self.callbacks.on_back
+    self.callbacks = nil
+
+    UIManager:close(self, "flashui")
+    self:_releaseHtmlWidget()
+
+    -- Defer list refresh until after UIManager finishes close/repaint (avoids
+    -- racing home Menu paint with ScrollHtmlWidget teardown on Kindle).
+    if on_back then
+        UIManager:nextTick(function()
+            pcall(on_back)
+        end)
+    end
     return true
 end
 
 function ArticleViewer:onCloseWidget()
-    if self.html_widget and self.html_widget.free then
-        self.html_widget:free()
-        self.html_widget = nil
-    end
-    UIManager:setDirty(nil, function()
-        return "ui", self.dimen
-    end)
+    self:_releaseHtmlWidget()
 end
 
 function Renderer:articleWidget(article, callbacks)
