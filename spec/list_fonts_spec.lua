@@ -16,25 +16,6 @@ describe("FreshRSS list_fonts helpers", function()
         ListFonts._resetSessionForTests()
     end)
 
-    it("detects Devanagari Unicode in titles", function()
-        assert.is_false(ListFonts.containsDevanagari("Hello"))
-        -- "हिन्दी" (Devanagari)
-        assert.is_true(ListFonts.containsDevanagari("हिन्दी news"))
-    end)
-
-    it("builds viewer font CSS with script stack", function()
-        local css = ListFonts.buildViewerFontCss({
-            latin = "/fonts/Latin.ttf",
-            devanagari = "/fonts/Hindi.ttf",
-            gujarati = "/fonts/Gujarati.ttf",
-        })
-        assert.truthy(css:find("FreshRSSLatin"))
-        assert.truthy(css:find("FreshRSSDevanagari"))
-        assert.truthy(css:find("FreshRSSGujarati"))
-        assert.truthy(css:find("url%('/fonts/Latin%.ttf'%)"))
-        assert.truthy(css:find("font%-family: 'FreshRSSLatin', 'FreshRSSDevanagari', 'FreshRSSGujarati'"))
-    end)
-
     it("normalizes font paths for MuPDF css urls", function()
         assert.equals("/mnt/us/koreader/fonts/Noto.ttf", ListFonts.absoluteFontPath("/mnt/us/koreader/fonts/Noto.ttf"))
         assert.equals("/fonts/Roboto.ttf", ListFonts.absoluteFontPath("\\fonts\\Roboto.ttf"))
@@ -46,63 +27,32 @@ describe("FreshRSS list_fonts helpers", function()
         f:write("x")
         f:close()
         local base = latin_path:match("([^/]+)$")
-        local fonts = { latin_path, "/other/NotoSansDevanagari-Regular.ttf" }
+        local fonts = { latin_path, "/other/Other-Regular.ttf" }
         assert.equals(latin_path, ListFonts.resolveFontPath(base, fonts))
         assert.equals(latin_path, ListFonts.resolveFontPath(latin_path, fonts))
         os.remove(latin_path)
     end)
 
-    it("resolves viewer fonts with saved settings", function()
-        local latin_path = os.tmpname() .. "-RobotoCondensed-Regular.ttf"
-        local dev_path = os.tmpname() .. "-NotoSansDevanagari-Regular.ttf"
-        local guj_path = os.tmpname() .. "-NotoSerifGujarati-Regular.ttf"
-        for _, p in ipairs({ latin_path, dev_path, guj_path }) do
-            local f = assert(io.open(p, "wb"))
-            f:write("x")
-            f:close()
-        end
-        local fonts = {
-            latin_path,
-            dev_path,
-            guj_path,
-        }
-        ListFonts.saveViewerLatinFont(latin_path)
-        ListFonts.saveViewerDevanagariFont(nil)
-        ListFonts.saveViewerGujaratiFont(nil)
-        local resolved = ListFonts.resolveViewerFonts(fonts)
-        assert.equals(latin_path, resolved.latin)
-        assert.equals(dev_path, resolved.devanagari)
-        assert.equals(guj_path, resolved.gujarati)
-        ListFonts.saveViewerLatinFont(nil)
-        os.remove(latin_path)
-        os.remove(dev_path)
-        os.remove(guj_path)
-    end)
-
-    it("detects Gujarati Unicode in titles", function()
-        assert.is_false(ListFonts.containsGujarati(nil))
-        assert.is_false(ListFonts.containsGujarati(""))
-        assert.is_false(ListFonts.containsGujarati("Hello world"))
-        -- "ગુજરાતી" (Gujarati)
-        assert.is_true(ListFonts.containsGujarati("ગુજરાતી news"))
-        assert.is_true(ListFonts.containsGujarati("English · ગુજરાતી"))
+    it("reads and saves a single viewer font including latin legacy key", function()
+        assert.is_nil(ListFonts.readViewerFont())
+        ListFonts.saveViewerFont("/fonts/Reader.ttf")
+        assert.equals("/fonts/Reader.ttf", ListFonts.readViewerFont())
+        ListFonts.saveViewerFont(nil)
+        assert.is_nil(ListFonts.readViewerFont())
+        settings_store[ListFonts.SETTING_VIEWER_LATIN_LEGACY] = "/fonts/LegacyLatin.ttf"
+        assert.equals("/fonts/LegacyLatin.ttf", ListFonts.readViewerFont())
     end)
 
     it("normalizes font keys for matching", function()
         assert.equals("robotocondensedregular", ListFonts.normalizeFontKey("Roboto-Condensed-Regular.ttf"))
-        assert.equals("notoserifgujarati", ListFonts.normalizeFontKey("/fonts/Noto Serif Gujarati.ttf"))
         assert.equals("", ListFonts.normalizeFontKey(nil))
         assert.is_true(ListFonts.normalizeFontKey("RobotoCondensed-Regular.ttf"):find("robotocondensed", 1, true) ~= nil)
     end)
 
-    it("matches font paths against hints", function()
+    it("matches font paths against latin hints", function()
         assert.is_true(ListFonts.pathMatchesHints(
             "/usr/fonts/RobotoCondensed-Regular.ttf",
             ListFonts.LATIN_HINTS
-        ))
-        assert.is_true(ListFonts.pathMatchesHints(
-            "NotoSerifGujarati-Regular.ttf",
-            ListFonts.GUJARATI_HINTS
         ))
         assert.is_false(ListFonts.pathMatchesHints(
             "NotoSans-Regular.ttf",
@@ -114,28 +64,18 @@ describe("FreshRSS list_fonts helpers", function()
         local fonts = {
             "/fonts/RobotoCondensed-Bold.ttf",
             "/fonts/RobotoCondensed-Regular.ttf",
-            "/fonts/NotoSerifGujarati-Bold.ttf",
-            "/fonts/NotoSerifGujarati-Regular.ttf",
         }
         assert.equals("/fonts/RobotoCondensed-Regular.ttf", ListFonts.findInstalledFont(ListFonts.LATIN_HINTS, fonts))
-        assert.equals("/fonts/NotoSerifGujarati-Regular.ttf", ListFonts.findInstalledFont(ListFonts.GUJARATI_HINTS, fonts))
     end)
 
-    it("resolves saved settings over auto-detect", function()
-        local fonts = { "/fonts/RobotoCondensed-Regular.ttf", "/fonts/NotoSerifGujarati-Regular.ttf" }
-        assert.equals("/fonts/RobotoCondensed-Regular.ttf", ListFonts.resolveLatinFont(fonts))
+    it("resolves saved latin list font without FontList scan", function()
+        assert.is_nil(ListFonts.resolveLatinFont())
         ListFonts.saveLatinFont("/custom/Latin.ttf")
-        assert.equals("/custom/Latin.ttf", ListFonts.resolveLatinFont(fonts))
+        assert.equals("/custom/Latin.ttf", ListFonts.resolveLatinFont())
         ListFonts.saveLatinFont(nil)
+        assert.is_nil(ListFonts.resolveLatinFont())
+        local fonts = { "/fonts/RobotoCondensed-Regular.ttf" }
         assert.equals("/fonts/RobotoCondensed-Regular.ttf", ListFonts.resolveLatinFont(fonts))
-    end)
-
-    it("persists gujarati font setting", function()
-        assert.is_nil(ListFonts.readGujaratiFont())
-        ListFonts.saveGujaratiFont("/fonts/NotoSerifGujarati-Regular.ttf")
-        assert.equals("/fonts/NotoSerifGujarati-Regular.ttf", ListFonts.readGujaratiFont())
-        ListFonts.saveGujaratiFont(nil)
-        assert.is_nil(ListFonts.readGujaratiFont())
     end)
 
     it("clamps and persists list font size", function()
@@ -154,14 +94,16 @@ describe("FreshRSS list_fonts helpers", function()
         assert.equals("Rasa", ListFonts.displayName("/fonts/Rasa-VariableFont_wght.ttf"))
     end)
 
-    it("builds missing-font hint when preferred fonts absent", function()
+    it("viewerFontLabel reflects saved or default font", function()
+        assert.equals("Viewer font: Default", ListFonts.viewerFontLabel())
+        ListFonts.saveViewerFont("/fonts/NotoSans.ttf")
+        assert.equals("Viewer font: NotoSans", ListFonts.viewerFontLabel())
+    end)
+
+    it("builds missing-font hint when preferred latin font absent", function()
         local msg = ListFonts.missingFontsHint({})
         assert.truthy(msg:find("Roboto Condensed", 1, true))
-        assert.truthy(msg:find("Noto Serif Gujarati", 1, true))
-        local fonts = {
-            "/fonts/RobotoCondensed-Regular.ttf",
-            "/fonts/NotoSerifGujarati-Regular.ttf",
-        }
+        local fonts = { "/fonts/RobotoCondensed-Regular.ttf" }
         assert.is_nil(ListFonts.missingFontsHint(fonts))
         local shown = {}
         assert.is_true(ListFonts.maybeShowMissingHint(function(m) shown[#shown + 1] = m end, {}))
@@ -169,34 +111,10 @@ describe("FreshRSS list_fonts helpers", function()
         assert.is_false(ListFonts.maybeShowMissingHint(function() end, {}))
     end)
 
-    it("injects and restores Gujarati fallback without touching smallinfofont", function()
-        package.loaded["ui/font"] = nil
-        local latin_path = os.tmpname()
-        local guj_path = os.tmpname()
-        local f1 = assert(io.open(latin_path, "wb")); f1:write("x"); f1:close()
-        local f2 = assert(io.open(guj_path, "wb")); f2:write("x"); f2:close()
-        package.preload["ui/font"] = function()
-            return {
-                fontmap = { smallinfofont = "NotoSans-Regular.ttf" },
-                fallbacks = {
-                    "NotoSans-Regular.ttf",
-                    "NotoSansCJKsc-Regular.otf",
-                },
-                faces = {},
-            }
-        end
-        ListFonts.saveLatinFont(latin_path)
-        ListFonts.saveGujaratiFont(guj_path)
+    it("apply and restore are safe no-ops", function()
         ListFonts.apply()
-        local Font = require("ui/font")
-        assert.equals("NotoSans-Regular.ttf", Font.fontmap.smallinfofont)
-        assert.equals(guj_path, Font.fallbacks[2])
         ListFonts.restore()
-        assert.equals("NotoSans-Regular.ttf", Font.fontmap.smallinfofont)
-        assert.equals("NotoSansCJKsc-Regular.otf", Font.fallbacks[2])
-        package.preload["ui/font"] = nil
-        package.loaded["ui/font"] = nil
-        os.remove(latin_path)
-        os.remove(guj_path)
+        ListFonts.apply()
+        ListFonts.restore()
     end)
 end)

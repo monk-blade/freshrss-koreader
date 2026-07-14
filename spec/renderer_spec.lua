@@ -165,6 +165,18 @@ describe("FreshRSS renderer HTML sanitize", function()
         assert.are.equal("/tmp/freshrss/images", resource_dir)
     end)
 
+    it("uses placeholders for first paint when show_images with empty map", function()
+        local article = { html = [[<p>x</p><img src="https://cdn/a.png">]] }
+        local body = Renderer.buildHtmlBody(article, {
+            show_images = true,
+            image_map = {},
+            html_resource_directory = "/tmp/freshrss/images",
+        })
+        assert.truthy(body:find("[image", 1, true))
+        assert.falsy(body:find("https://cdn/a.png", 1, true))
+        assert.falsy(body:find("deadbeef", 1, true))
+    end)
+
     it("returns resource_dir when show_images even without map downloads", function()
         local _, resource_dir = Renderer.buildHtmlBody({ html = "<p>x</p>" }, {
             show_images = true,
@@ -181,21 +193,18 @@ describe("FreshRSS renderer CSS / view settings", function()
         end
     end)
 
-    it("injects multi-script @font-face stack for viewer fonts", function()
+    it("injects single @font-face when a font path is set", function()
         local css = Renderer.buildCss({
-            viewer_fonts = {
-                latin = "/fonts/RobotoCondensed-Regular.ttf",
-                devanagari = "/fonts/NotoSansDevanagari-Regular.ttf",
-                gujarati = "/fonts/NotoSerifGujarati-Regular.ttf",
-            },
+            font_face = "/fonts/NotoSans.ttf",
             line_height = 1.45,
             show_images = false,
         })
-        assert.truthy(css:find("FreshRSSLatin", 1, true))
-        assert.truthy(css:find("FreshRSSDevanagari", 1, true))
-        assert.truthy(css:find("FreshRSSGujarati", 1, true))
-        assert.truthy(css:find("/fonts/NotoSansDevanagari-Regular.ttf", 1, true))
-        assert.truthy(css:find("font%-family: 'FreshRSSLatin', 'FreshRSSDevanagari', 'FreshRSSGujarati'"))
+        assert.truthy(css:find("@font%-face"))
+        assert.truthy(css:find("FreshRSSFont", 1, true))
+        assert.truthy(css:find("/fonts/NotoSans.ttf", 1, true))
+        assert.truthy(css:find("line%-height: 1%.45"))
+        assert.falsy(css:find("FreshRSSDevanagari", 1, true))
+        assert.falsy(css:find("FreshRSSGujarati", 1, true))
     end)
 
     it("includes wide-block and table overflow CSS", function()
@@ -217,13 +226,13 @@ describe("FreshRSS renderer CSS / view settings", function()
 
     it("injects @font-face when a font path is set", function()
         local css = Renderer.buildCss({
-            font_face = "/fonts/NotoSans.ttf",
+            font_face = "/fonts/Bookerly.ttf",
             line_height = 1.45,
             show_images = false,
         })
         assert.truthy(css:find("@font%-face"))
         assert.truthy(css:find("FreshRSSFont", 1, true))
-        assert.truthy(css:find("/fonts/NotoSans.ttf", 1, true))
+        assert.truthy(css:find("/fonts/Bookerly.ttf", 1, true))
         assert.truthy(css:find("line%-height: 1%.45"))
     end)
 

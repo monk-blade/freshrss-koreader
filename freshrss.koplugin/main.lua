@@ -32,6 +32,13 @@ local Plugin = WidgetContainer:extend{
     is_doc_only = false,
 }
 
+-- Seconds after forceRePaint before deferred open stages.
+-- Image work must NOT run in nextTick: Images.prepare / MuPDF reinit can stall UI.
+-- Mark-read on open is local cache + action queue only (no HTTP until Sync).
+Plugin.ARTICLE_OPEN_DEFER_CACHED_IMAGES = 0.25
+Plugin.ARTICLE_OPEN_DEFER_DOWNLOAD = 0.75
+Plugin.ARTICLE_OPEN_DEFER_IMAGES_RETRY = 1.0
+
 local MODE_LABELS = {
     unread = "Unread",
     all = "All",
@@ -152,6 +159,33 @@ function Plugin:markReadOnOpen()
     local value = self.settings:readSetting("freshrss_mark_read_on_open")
     if value == nil then return true end
     return value and true or false
+end
+
+-- Cancel deferred openArticle stages (cached images / download / sync-retry).
+-- Must run before a new open, on viewer close/detach, and Prev/Next reopen.
+function Plugin:cancelArticleOpenTasks()
+    local tasks = self._article_open_tasks
+    if not tasks then return end
+    for i = #tasks, 1, -1 do
+        local action = tasks[i]
+        tasks[i] = nil
+        if action then
+            pcall(function() UIManager:unschedule(action) end)
+        end
+    end
+    self._article_open_tasks = nil
+end
+
+function Plugin:_scheduleArticleOpenTask(seconds, action)
+    if type(action) ~= "function" then return end
+    local tasks = self._article_open_tasks
+    if not tasks then
+        tasks = {}
+        self._article_open_tasks = tasks
+    end
+    table.insert(tasks, action)
+    UIManager:scheduleIn(seconds, action)
+    return action
 end
 
 function Plugin:cleanCacheNow()
@@ -645,49 +679,23 @@ function Plugin:showBrowsePicker()
     UIManager:show(self.browse_picker, "ui")
 end
 
-function Plugin:listFontLabel(kind)
-    local path
-    if kind == "gujarati" then
-        path = ListFonts.readGujaratiFont() or ListFonts.resolveGujaratiFont()
-        if not ListFonts.readGujaratiFont() and path then
-            return "List font (Gujarati): auto · " .. ListFonts.displayName(path)
-        end
-        return "List font (Gujarati): " .. ListFonts.displayName(path)
+function Plugin:listFontLabel()
+    local path = ListFonts.readLatinFont()
+    if path then
+        return "List font: " .. ListFonts.displayName(path)
     end
-    path = ListFonts.readLatinFont() or ListFonts.resolveLatinFont()
-    if not ListFonts.readLatinFont() and path then
-        return "List font (Latin): auto · " .. ListFonts.displayName(path)
-    end
-    return "List font (Latin): " .. ListFonts.displayName(path)
+    return "List font: Default"
 end
 
-function Plugin:showViewerFontPicker(kind)
+function Plugin:showViewerFontPicker()
     local FontList = require("fontlist")
     local fonts = FontList:getFontList() or {}
-    local titles = {
-        latin = "Viewer font (Latin)",
-        devanagari = "Viewer font (Hindi)",
-        gujarati = "Viewer font (Gujarati)",
-    }
-    local title = titles[kind] or titles.latin
-    local readers = {
-        latin = ListFonts.readViewerLatinFont,
-        devanagari = ListFonts.readViewerDevanagariFont,
-        gujarati = ListFonts.readViewerGujaratiFont,
-    }
-    local savers = {
-        latin = ListFonts.saveViewerLatinFont,
-        devanagari = ListFonts.saveViewerDevanagariFont,
-        gujarati = ListFonts.saveViewerGujaratiFont,
-    }
-    local read_fn = readers[kind] or readers.latin
-    local save_fn = savers[kind] or savers.latin
-    local current = read_fn()
+    local current = ListFonts.readViewerFont()
     local entries = {
         {
-            text = "Default / auto" .. (not current and " ✓" or ""),
+            text = "Default" .. (not current and " ✓" or ""),
             callback = function()
-                save_fn(nil)
+                ListFonts.saveViewerFont(nil)
                 UIManager:close(self.viewer_font_menu)
                 self.viewer_font_menu = nil
                 if self.appearance_menu then
@@ -696,6 +704,7 @@ function Plugin:showViewerFontPicker(kind)
                     self:showSettingsMenu()
                 end
                 if self.viewer and self.viewer.reinit then
+                    self.viewer.font_face = nil
                     self.viewer:reinit()
                 end
             end,
@@ -707,7 +716,7 @@ function Plugin:showViewerFontPicker(kind)
         table.insert(entries, {
             text = name .. selected,
             callback = function()
-                save_fn(path)
+                ListFonts.saveViewerFont(path)
                 UIManager:close(self.viewer_font_menu)
                 self.viewer_font_menu = nil
                 if self.appearance_menu then
@@ -716,6 +725,7 @@ function Plugin:showViewerFontPicker(kind)
                     self:showSettingsMenu()
                 end
                 if self.viewer and self.viewer.reinit then
+                    self.viewer.font_face = path
                     self.viewer:reinit()
                 end
             end,
@@ -725,7 +735,7 @@ function Plugin:showViewerFontPicker(kind)
         UIManager:close(self.viewer_font_menu)
     end
     self.viewer_font_menu = Menu:new{
-        title = title,
+        title = "Viewer font",
         item_table = entries,
         is_popout = false,
         is_borderless = true,
@@ -743,20 +753,15 @@ function Plugin:showViewerFontPicker(kind)
     UIManager:show(self.viewer_font_menu, "ui")
 end
 
-function Plugin:showListFontPicker(kind)
+function Plugin:showListFontPicker()
     local FontList = require("fontlist")
     local fonts = FontList:getFontList() or {}
-    local title = kind == "gujarati" and "List font (Gujarati)" or "List font (Latin)"
-    local current = kind == "gujarati" and ListFonts.readGujaratiFont() or ListFonts.readLatinFont()
+    local current = ListFonts.readLatinFont()
     local entries = {
         {
-            text = "Default / auto" .. (not current and " ✓" or ""),
+            text = "Default" .. (not current and " ✓" or ""),
             callback = function()
-                if kind == "gujarati" then
-                    ListFonts.saveGujaratiFont(nil)
-                else
-                    ListFonts.saveLatinFont(nil)
-                end
+                ListFonts.saveLatinFont(nil)
                 UIManager:close(self.list_font_menu)
                 self.list_font_menu = nil
                 ListFonts.apply()
@@ -775,11 +780,7 @@ function Plugin:showListFontPicker(kind)
         table.insert(entries, {
             text = name .. selected,
             callback = function()
-                if kind == "gujarati" then
-                    ListFonts.saveGujaratiFont(path)
-                else
-                    ListFonts.saveLatinFont(path)
-                end
+                ListFonts.saveLatinFont(path)
                 UIManager:close(self.list_font_menu)
                 self.list_font_menu = nil
                 ListFonts.apply()
@@ -796,7 +797,7 @@ function Plugin:showListFontPicker(kind)
         UIManager:close(self.list_font_menu)
     end
     self.list_font_menu = Menu:new{
-        title = title,
+        title = "List font",
         item_table = entries,
         is_popout = false,
         is_borderless = true,
@@ -1073,19 +1074,17 @@ function Plugin:showCacheSettings()
 end
 
 function Plugin:showAppearanceSettings()
+    -- FontList scan only when Appearance opens (not on every article open).
+    local ok_fl, FontList = pcall(require, "fontlist")
+    local font_list = (ok_fl and FontList and FontList:getFontList()) or {}
     ListFonts.maybeShowMissingHint(function(msg)
         UIManager:show(InfoMessage:new{ text = msg, timeout = 6 })
-    end)
+    end, font_list)
     self:showSettingsSubmenu("appearance_menu", "Appearance", {
         {
             icon = "type",
-            text = self:listFontLabel("latin"),
-            callback = function() self:showListFontPicker("latin") end,
-        },
-        {
-            icon = "type",
-            text = self:listFontLabel("gujarati"),
-            callback = function() self:showListFontPicker("gujarati") end,
+            text = self:listFontLabel(),
+            callback = function() self:showListFontPicker() end,
         },
         {
             icon = "a_large_small",
@@ -1114,18 +1113,8 @@ function Plugin:showAppearanceSettings()
         },
         {
             icon = "type",
-            text = ListFonts.viewerFontLabel("latin"),
-            callback = function() self:showViewerFontPicker("latin") end,
-        },
-        {
-            icon = "type",
-            text = ListFonts.viewerFontLabel("devanagari"),
-            callback = function() self:showViewerFontPicker("devanagari") end,
-        },
-        {
-            icon = "type",
-            text = ListFonts.viewerFontLabel("gujarati"),
-            callback = function() self:showViewerFontPicker("gujarati") end,
+            text = ListFonts.viewerFontLabel(),
+            callback = function() self:showViewerFontPicker() end,
         },
         {
             icon = "a_large_small",
@@ -1590,7 +1579,7 @@ function Plugin:loadViewerImages(article, viewer)
         return existing and next(existing) ~= nil
     end
     if not need_download then
-        -- openArticle already painted with cached_map; skip reinit unless first paint was empty.
+        -- openArticle already painted placeholders; apply cached map only if still empty.
         if next(cached_map) and not mapAlreadyApplied() then
             viewer:applyImageMap(cached_map, img_dir)
         end
@@ -1602,15 +1591,28 @@ function Plugin:loadViewerImages(article, viewer)
         end
         return
     end
-    local map, dir, downloaded = Images.prepare(raw, {
-        data_dir = data_dir,
-        download = true,
-        is_online = true,
-    })
-    if viewer ~= self.viewer then return end
-    if downloaded > 0 or next(map) then
+    -- Avoid contending with an in-flight sync's HTTP/SSL on Kindle.
+    if self.syncing then
+        if next(cached_map) and not mapAlreadyApplied() then
+            viewer:applyImageMap(cached_map, img_dir)
+        end
+        self:_scheduleArticleOpenTask(Plugin.ARTICLE_OPEN_DEFER_IMAGES_RETRY, function()
+            if self.viewer ~= viewer or viewer._closing or self.syncing then return end
+            self:loadViewerImages(article, viewer)
+        end)
+        return
+    end
+    local ok_prep, map, dir, downloaded = pcall(function()
+        return Images.prepare(raw, {
+            data_dir = data_dir,
+            download = true,
+            is_online = true,
+        })
+    end)
+    if not ok_prep or viewer ~= self.viewer or viewer._closing then return end
+    if (downloaded and downloaded > 0) or (map and next(map)) then
         viewer:applyImageMap(map, dir or img_dir)
-        if downloaded > 0 then
+        if downloaded and downloaded > 0 then
             Notification:notify(
                 string.format("Loaded %d image%s", downloaded, downloaded == 1 and "" or "s"),
                 Notification.SOURCE_ALWAYS_SHOW
@@ -1620,6 +1622,9 @@ function Plugin:loadViewerImages(article, viewer)
 end
 
 function Plugin:openArticle(id, nav_ids)
+    -- Always drop prior stages first (close / Prev / Next / failed reopen).
+    self:cancelArticleOpenTasks()
+
     local article = self.cache:getArticle(id)
     if not article then return end
 
@@ -1647,13 +1652,17 @@ function Plugin:openArticle(id, nav_ids)
 
     local mark_on_open = self:markReadOnOpen()
     if mark_on_open then
+        -- Local-only: never HTTP mark-read on the UI thread (15s socket hang).
+        -- Flush happens on explicit Sync via flushQueue.
         article.unread = false
         self.cache:putArticle(article)
+        self.sync:queueAction(id, "read", true)
     end
 
     local function reopen(neighbor_id)
         local old = self.viewer
         if old then
+            self:cancelArticleOpenTasks()
             self.viewer = nil
             if old.onClose then
                 -- Prev/next: close without refreshHomeAfterViewer (callbacks cleared).
@@ -1668,10 +1677,11 @@ function Plugin:openArticle(id, nav_ids)
 
     local data_dir = self.cache.root
     local show_images = Renderer.readShowImages()
+    -- Text-first open: never scan image cache or rewrite maps before UIManager:show.
+    -- Cached images / downloads reinit MuPDF after first paint settles.
     local image_map, resource_dir = {}, nil
     if show_images then
-        image_map, resource_dir = Images.cachedMap(article.html or "", data_dir)
-        resource_dir = Images.ensureDirectory(resource_dir or Images.directory(data_dir))
+        resource_dir = Images.ensureDirectory(Images.directory(data_dir))
     end
 
     local function openOriginal()
@@ -1705,7 +1715,10 @@ function Plugin:openArticle(id, nav_ids)
         image_map = image_map,
         html_resource_directory = resource_dir,
         on_detach = function()
-            self.viewer = nil
+            self:cancelArticleOpenTasks()
+            if self.viewer == widget then
+                self.viewer = nil
+            end
         end,
         on_back = function()
             -- Viewer X / Back: refresh list only — never rebuild/close Home.
@@ -1781,28 +1794,33 @@ function Plugin:openArticle(id, nav_ids)
     widget = widget_or_err
     self.viewer = widget
     UIManager:show(widget, "ui")
-    -- Paint first on Kindle, then light work, then network image fetch.
-    -- Synchronous Images.prepare() during open hung Paperwhite on first open.
+    -- Kindle Paperwhite: api.lua uses socketutil:set_timeout(15, 30). Running
+    -- sync applyAction / Images.prepare in nextTick after show freezes the event
+    -- loop for up to that full 15s block timeout (seen as "not painting 2 covered
+    -- widget(s)" with no input). First paint = text-only shell; stage the rest.
     UIManager:forceRePaint()
-    UIManager:nextTick(function()
-        if self.viewer ~= widget then return end
-        if mark_on_open then
-            self.sync:applyAction(self:api(), id, "read", true)
-        end
-        -- Apply already-cached images only (no network) for a fast second paint.
-        if widget.show_images then
-            local cached_map, cached_dir = Images.cachedMap(article.html or "", self.cache.root)
-            if next(cached_map) and (not widget.image_map or not next(widget.image_map)) then
-                local dir = Images.ensureDirectory(cached_dir or Images.directory(self.cache.root))
-                widget:applyImageMap(cached_map, dir)
-            end
-        end
-        -- Defer network downloads so MuPDF open finishes before HTTP work.
-        UIManager:scheduleIn(0.4, function()
-            if self.viewer == widget then
-                self:loadViewerImages(article, widget)
-            end
+
+    -- Stage 1: apply locally cached images only (disk). One MuPDF reinit.
+    -- Always deferred — even when cache is warm — so second open never sync-reinits
+    -- before / during first paint of the new viewer.
+    self:_scheduleArticleOpenTask(Plugin.ARTICLE_OPEN_DEFER_CACHED_IMAGES, function()
+        if self.viewer ~= widget or widget._closing then return end
+        if not widget.show_images then return end
+        local ok, cached_map, cached_dir = pcall(function()
+            return Images.cachedMap(article.html or "", self.cache.root)
         end)
+        if not ok or not cached_map or not next(cached_map) then return end
+        if widget.image_map and next(widget.image_map) then return end
+        local dir = Images.ensureDirectory(cached_dir or Images.directory(self.cache.root))
+        pcall(function()
+            widget:applyImageMap(cached_map, dir)
+        end)
+    end)
+
+    -- Stage 2: network image fetches (also blocking HTTP — after interactivity).
+    self:_scheduleArticleOpenTask(Plugin.ARTICLE_OPEN_DEFER_DOWNLOAD, function()
+        if self.viewer ~= widget or widget._closing then return end
+        self:loadViewerImages(article, widget)
     end)
 end
 

@@ -115,7 +115,7 @@ ul:first-child, ol:first-child { margin-top: 0 !important; }
 ]], top, side, bottom, side, tostring(lh), align_css, tostring(lh), align_css, img_css)
 end
 
----Build MuPDF CSS including optional @font-face (FootnoteWidget-style).
+---Build MuPDF CSS including optional single @font-face (FootnoteWidget-style).
 function Renderer.buildCss(opts)
     opts = opts or {}
     local show_images = opts.show_images
@@ -125,8 +125,6 @@ function Renderer.buildCss(opts)
     if justify == nil then justify = Renderer.readJustifyText() end
     local font_face = opts.font_face
     if font_face == nil then font_face = Renderer.readFontFace() end
-    local viewer_fonts = opts.viewer_fonts
-    if viewer_fonts == nil then viewer_fonts = Renderer.readViewerFonts() end
     local pad_top = opts.pad_top
     if pad_top == nil then pad_top = Renderer.readPadTop() end
     local pad_side = opts.pad_side
@@ -135,9 +133,7 @@ function Renderer.buildCss(opts)
     if pad_bottom == nil then pad_bottom = Renderer.readPadBottom() end
 
     local css = cssBase(line_height, show_images, justify, pad_top, pad_side, pad_bottom)
-    if viewer_fonts and (viewer_fonts.latin or viewer_fonts.devanagari or viewer_fonts.gujarati) then
-        css = css .. "\n" .. ListFonts.buildViewerFontCss(viewer_fonts)
-    elseif font_face and font_face ~= "" then
+    if font_face and font_face ~= "" then
         local resolved = ListFonts.resolveFontPath(font_face)
             or ListFonts.absoluteFontPath(font_face)
         if resolved then
@@ -148,11 +144,6 @@ function Renderer.buildCss(opts)
         end
     end
     return css
-end
-
----Resolved viewer font paths for MuPDF CSS (Latin / Devanagari / Gujarati).
-function Renderer.readViewerFonts()
-    return ListFonts.resolveViewerFonts()
 end
 
 ---Human-readable image toggle label for View settings.
@@ -361,11 +352,11 @@ function Renderer.saveTitleFontSize(size)
 end
 
 function Renderer.readFontFace()
-    return ListFonts.readViewerLatinFont()
+    return ListFonts.readViewerFont()
 end
 
 function Renderer.saveFontFace(face)
-    ListFonts.saveViewerLatinFont(face)
+    ListFonts.saveViewerFont(face)
 end
 
 function Renderer.readLineHeight()
@@ -855,12 +846,12 @@ function ArticleViewer:_buildHtmlWidget()
         self.html_resource_directory = resource_dir
     end
     local font_px = Screen:scaleBySize(self.font_size)
+    -- Single optional font only — never scan FontList here (hangs Kindle on first open).
     local css = Renderer.buildCss({
         show_images = self.show_images,
         line_height = self.line_height,
         justify = self.justify_text,
         font_face = self.font_face,
-        viewer_fonts = Renderer.readViewerFonts(),
         pad_top = self.pad_top,
         pad_side = self.pad_side,
         pad_bottom = self.pad_bottom,

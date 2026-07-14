@@ -428,7 +428,7 @@ function Home:onClose()
     if plugin then
         pcall(function() plugin:closeHomeOverlays() end)
         pcall(function() Status:close() end)
-        -- Restore Gujarati fallback injection before underlying UI repaints.
+        -- Restore list-font session state before underlying UI repaints.
         -- smallinfofont is never remapped globally (list_menu scopes Latin font).
         if plugin.list_fonts then
             pcall(function() plugin.list_fonts.restore() end)

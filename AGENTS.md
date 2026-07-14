@@ -33,7 +33,7 @@ API (api.lua) → Sync (sync.lua) → Cache (cache.lua)
 - **`home.lua`** — full-screen home (TitleBar + favorites/actions row + nested article `Menu`).
 - **`renderer.lua`** — `ScrollHtmlWidget` viewer (fonts, line height, images, whitespace sanitize, hold-to-dictionary via `ReaderDictionary`).
 - **`fav_categories.lua`** / **`settings_ui.lua`** — favorite category chips and icon Settings/View panels.
-- **`list_fonts.lua`** — Latin Menu face + Gujarati Font.fallbacks while home is open.
+- **`list_fonts.lua`** — optional Latin Menu face for the article list + single viewer font setting.
 - **`list_format.lua`** — short published dates and feed unread-count helpers for list rows.
 - **`nav.lua`** — stable Prev/Next against an id snapshot.
 - **`ui_status.lua`** — top sync progress strip.
