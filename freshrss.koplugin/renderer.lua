@@ -47,14 +47,14 @@ local LINE_HEIGHT_STEP = 0.05
 local LINE_HEIGHTS = { 1.2, 1.45, 1.7 }
 local DEFAULT_JUSTIFY = true
 local DEFAULT_PAD_TOP = 0.0
-local DEFAULT_PAD_SIDE = 0.5
+local DEFAULT_PAD_SIDE = 0.15
 local DEFAULT_PAD_BOTTOM = 0.0
 local PAD_MIN = 0.0
 local PAD_MAX = 3.0
 local PAD_STEP = 0.1
 -- Legacy discrete presets for cycle helpers / tests.
 local PAD_TOP_VALUES = { 0.0, 0.2, 0.5, 1.0, 1.5 }
-local PAD_SIDE_VALUES = { 0.2, 0.5, 0.8, 1.2, 1.6 }
+local PAD_SIDE_VALUES = { 0.0, 0.15, 0.3, 0.5, 0.8 }
 local PAD_BOTTOM_VALUES = { 0.0, 0.2, 0.5, 1.0, 1.5 }
 
 ---Convert spacing setting (em-like units) to CSS px independent of article font size.
@@ -74,14 +74,14 @@ local function cssBase(line_height, show_images, justify, pad_top, pad_side, pad
     local lh = tonumber(line_height) or DEFAULT_LINE_HEIGHT
     local align_css = justify and "text-align: justify; " or "text-align: left; "
     local img_css = show_images
-        and "img { display: block; max-width: 100%; height: auto; margin: 0.5em 0; }"
+        and "img { display: block; max-width: 100%; height: auto; margin: 0.35em 0; }"
         or "img { display: none; }"
     local top = padToPx(pad_top or DEFAULT_PAD_TOP)
     local side = padToPx(pad_side or DEFAULT_PAD_SIDE)
     local bottom = padToPx(pad_bottom or DEFAULT_PAD_BOTTOM)
     return string.format([[
 html, body { margin: 0 !important; padding: 0 !important; }
-body { padding: %dpx %dpx %dpx %dpx !important; line-height: %s; %s}
+body { padding: %dpx %dpx %dpx %dpx !important; margin: 0 !important; line-height: %s; %s}
 body > *:first-child,
 body > *:first-child > *:first-child,
 body > *:first-child > *:first-child > *:first-child,
@@ -90,23 +90,27 @@ body > *:first-child > *:first-child > *:first-child > *:first-child {
 }
 body > div:first-child, body > section:first-child, body > article:first-child,
 body > header:first-child, body > main:first-child, body > figure:first-child,
-body > p:first-child {
+body > p:first-child, body > h1:first-child, body > h2:first-child,
+body > ul:first-child, body > ol:first-child, body > table:first-child,
+body > blockquote:first-child {
   margin-top: 0 !important; padding-top: 0 !important;
 }
-p { margin: 0.35em 0; line-height: %s; %s}
-p:first-child { margin-top: 0; }
-h1, h2, h3, h4 { margin: 0.6em 0 0.3em; line-height: 1.25; }
-h1:first-child, h2:first-child, h3:first-child, h4:first-child { margin-top: 0; }
+p { margin: 0.25em 0; line-height: %s; %s}
+p:first-child { margin-top: 0 !important; }
+h1, h2, h3, h4 { margin: 0.4em 0 0.2em; line-height: 1.2; }
+h1:first-child, h2:first-child, h3:first-child, h4:first-child { margin-top: 0 !important; }
 img:first-child, body > img:first-child { margin-top: 0 !important; }
 a { text-decoration: underline; }
-blockquote { margin: 0.5em 0; padding-left: 0.8em; border-left: 2px solid #888; }
-blockquote:first-child { margin-top: 0; }
+blockquote { margin: 0.35em 0; padding-left: 0.7em; border-left: 2px solid #888; }
+blockquote:first-child { margin-top: 0 !important; }
 pre, code { font-family: monospace; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; max-width: 100%%; }
-table { width: 100%%; max-width: 100%%; table-layout: fixed; border-collapse: collapse; word-break: break-word; overflow-wrap: break-word; }
-td, th { word-break: break-word; overflow-wrap: break-word; padding: 0.2em 0.3em; vertical-align: top; }
-figure, svg, canvas, video { max-width: 100%%; height: auto; }
-div, section, article, aside { max-width: 100%%; overflow-wrap: break-word; word-break: break-word; }
-ul, ol { margin: 0.4em 0; padding-left: 1.4em; }
+table { width: 100%%; max-width: 100%%; table-layout: fixed; border-collapse: collapse; word-break: break-word; overflow-wrap: break-word; margin: 0.25em 0; }
+td, th { word-break: break-word; overflow-wrap: break-word; padding: 0.15em 0.25em; vertical-align: top; }
+figure, svg, canvas, video { max-width: 100%%; height: auto; margin: 0.25em 0; }
+figure:first-child { margin-top: 0 !important; }
+div, section, article, aside { max-width: 100%%; overflow-wrap: break-word; word-break: break-word; margin-top: 0; }
+ul, ol { margin: 0.3em 0; padding-left: 1.2em; }
+ul:first-child, ol:first-child { margin-top: 0 !important; }
 %s
 ]], top, side, bottom, side, tostring(lh), align_css, tostring(lh), align_css, img_css)
 end
@@ -134,10 +138,14 @@ function Renderer.buildCss(opts)
     if viewer_fonts and (viewer_fonts.latin or viewer_fonts.devanagari or viewer_fonts.gujarati) then
         css = css .. "\n" .. ListFonts.buildViewerFontCss(viewer_fonts)
     elseif font_face and font_face ~= "" then
-        css = css .. string.format(
-            "\n@font-face { font-family: 'FreshRSSFont'; src: url('%s'); }\nbody { font-family: 'FreshRSSFont'; }\n",
-            font_face:gsub("'", "")
-        )
+        local resolved = ListFonts.resolveFontPath(font_face)
+            or ListFonts.absoluteFontPath(font_face)
+        if resolved then
+            css = css .. string.format(
+                "\n@font-face { font-family: 'FreshRSSFont'; src: url('%s'); }\nbody { font-family: 'FreshRSSFont'; }\n",
+                resolved:gsub("\\", "/"):gsub("'", "\\'")
+            )
+        end
     end
     return css
 end
@@ -200,7 +208,7 @@ function Renderer.sanitizeHtml(html, opts)
     body = body:gsub("<audio[%s>].-</audio>", "")
     body = body:gsub("<AUDIO[%s>].-</AUDIO>", "")
     -- Drop leading empty wrappers / breaks that create a fake top margin.
-    for _ = 1, 8 do
+    for _ = 1, 12 do
         local trimmed = body
             :gsub("^%s+", "")
             :gsub("^<%s*[pP][^>]*>%s*<%s*/%s*[pP]%s*>", "")
@@ -210,10 +218,15 @@ function Renderer.sanitizeHtml(html, opts)
             :gsub("^<%s*[dD][iI][vV][^>]*>%s*<%s*/%s*[dD][iI][vV]%s*>", "")
             :gsub("^<%s*[sS][pP][aA][nN][^>]*>%s*<%s*/%s*[sS][pP][aA][nN]%s*>", "")
             :gsub("^<%s*[dD][iI][vV][^>]*>%s*&nbsp;%s*<%s*/%s*[dD][iI][vV]%s*>", "")
+            :gsub("^<%s*[sS][eE][cC][tT][iI][oO][nN][^>]*>%s*<%s*/%s*[sS][eE][cC][tT][iI][oO][nN]%s*>", "")
+            :gsub("^<%s*[aA][rR][tT][iI][cC][lL][eE][^>]*>%s*<%s*/%s*[aA][rR][tT][iI][cC][lL][eE]%s*>", "")
+            :gsub("^<%s*[hH][eE][aA][dD][eE][rR][^>]*>%s*<%s*/%s*[hH][eE][aA][dD][eE][rR]%s*>", "")
             :gsub("^<%s*[hH][rR][^>]*/?%s*>", "")
             :gsub("^<%s*[fF][iI][gG][uU][rR][eE][^>]*>%s*<%s*/%s*[fF][iI][gG][uU][rR][eE]%s*>", "")
             :gsub("^<%s*br%s*/?%s*>", "")
             :gsub("^&nbsp;", "")
+            :gsub("^&#160;", "")
+            :gsub("^&#xA0;", "")
             -- Strip leading inline top margin/padding on the first open tag.
             :gsub("^(<%s*%w+[^>]-)%s[sS][tT][yY][lL][eE]%s*=%s*\"([^\"]*)\"", function(open, style)
                 local cleaned = style
@@ -733,7 +746,7 @@ function ArticleViewer:_buildTitleBar()
         title_shrink_font_to_fit = false,
         with_bottom_line = true,
         title_top_padding = 0,
-        title_subtitle_v_padding = Screen:scaleBySize(1),
+        title_subtitle_v_padding = 0,
         bottom_v_padding = 0,
         left_icon = "appbar.menu",
         left_icon_size_ratio = 0.7,

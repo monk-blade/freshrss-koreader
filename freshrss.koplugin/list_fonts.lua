@@ -42,6 +42,13 @@ ListFonts.SETTING_VIEWER_GUJARATI = "freshrss_viewer_font_gujarati"
 -- Legacy single-font setting maps to Latin when viewer_latin unset.
 ListFonts.SETTING_VIEWER_LEGACY = "freshrss_viewer_font_face"
 
+-- Cached resolveViewerFonts result (FontList scan is expensive on Kindle).
+local _viewer_fonts_cache = nil
+
+function ListFonts.clearViewerFontsCache()
+    _viewer_fonts_cache = nil
+end
+
 -- Session overrides while FreshRSS home is open (Gujarati fallback only).
 local _session = {
     applied = false,
@@ -210,6 +217,7 @@ local function saveViewerSetting(key, face)
         G_reader_settings:delSetting(key)
     end
     G_reader_settings:flush()
+    ListFonts.clearViewerFontsCache()
 end
 
 function ListFonts.readViewerLatinFont()
@@ -261,9 +269,69 @@ function ListFonts.resolveViewerGujaratiFont(font_list)
     return ListFonts.findInstalledFont(ListFonts.GUJARATI_HINTS, font_list)
 end
 
+---Normalize separators; resolve relative paths for MuPDF (FootnoteWidget-style).
+function ListFonts.absoluteFontPath(path)
+    if type(path) ~= "string" or path == "" then return nil end
+    path = path:gsub("\\", "/")
+    if not path:match("^/") and not path:match("^%a:[/\\]") then
+        local ok, ffiUtil = pcall(require, "ffi/util")
+        if ok and ffiUtil.realpath then
+            local resolved = ffiUtil.realpath(path)
+            if type(resolved) == "string" and resolved ~= "" then
+                path = resolved:gsub("\\", "/")
+            end
+        end
+    end
+    return path
+end
+
+---Return an on-disk font path MuPDF can open, or nil.
+-- @param path string saved or discovered font path
+-- @param font_list string[]|nil FontList paths for basename fallback
+function ListFonts.resolveFontPath(path, font_list)
+    if type(path) ~= "string" or path == "" then return nil end
+
+    local function readable(candidate)
+        if type(candidate) ~= "string" or candidate == "" then return nil end
+        candidate = candidate:gsub("\\", "/")
+        local f = io.open(candidate, "rb")
+        if f then
+            f:close()
+            return ListFonts.absoluteFontPath(candidate)
+        end
+        return nil
+    end
+
+    local hit = readable(path)
+    if hit then return hit end
+
+    local abs = ListFonts.absoluteFontPath(path)
+    if abs and abs ~= path then
+        hit = readable(abs)
+        if hit then return hit end
+    end
+
+    local base = path:match("([^/\\]+)$") or path
+    local want = ListFonts.normalizeFontKey(base)
+    if want ~= "" and font_list then
+        for _, candidate in ipairs(font_list) do
+            local cb = candidate:match("([^/\\]+)$") or candidate
+            if cb == base or ListFonts.normalizeFontKey(cb) == want then
+                hit = readable(candidate)
+                if hit then return hit end
+            end
+        end
+    end
+
+    return nil
+end
+
 ---Escape a filesystem path for MuPDF @font-face url('…').
 local function cssFontUrl(path)
-    return tostring(path or ""):gsub("'", "")
+    path = ListFonts.absoluteFontPath(path) or tostring(path or "")
+    path = path:gsub("\\", "/")
+    path = path:gsub("'", "\\'")
+    return path
 end
 
 ---Emit @font-face rules + font-family stack for MuPDF article CSS.
@@ -305,12 +373,60 @@ function ListFonts.buildViewerFontCss(opts)
     return css
 end
 
----Resolved viewer font paths (auto-detect when unset).
+---Resolved viewer font paths (auto-detect when unset), absolute and readable.
+---Cached: FontList scans hang on Kindle Paperwhite if done every article open.
 function ListFonts.resolveViewerFonts(font_list)
+    local provided_list = font_list ~= nil
+    if not provided_list and _viewer_fonts_cache then
+        return {
+            latin = _viewer_fonts_cache.latin,
+            devanagari = _viewer_fonts_cache.devanagari,
+            gujarati = _viewer_fonts_cache.gujarati,
+        }
+    end
+
+    -- Prefer saved absolute paths without scanning FontList (fast path).
+    local latin_saved = ListFonts.readViewerLatinFont()
+    local deva_saved = ListFonts.readViewerDevanagariFont()
+    local guj_saved = ListFonts.readViewerGujaratiFont()
+    local latin = latin_saved and ListFonts.resolveFontPath(latin_saved, nil) or nil
+    local devanagari = deva_saved and ListFonts.resolveFontPath(deva_saved, nil) or nil
+    local gujarati = guj_saved and ListFonts.resolveFontPath(guj_saved, nil) or nil
+
+    local need_scan = (not latin) or (not devanagari) or (not gujarati)
+
+    if need_scan and not provided_list then
+        local ok, FontList = pcall(require, "fontlist")
+        if ok and FontList then
+            font_list = FontList:getFontList() or {}
+        else
+            font_list = {}
+        end
+    end
+    font_list = font_list or {}
+
+    if not latin then
+        latin = ListFonts.resolveFontPath(ListFonts.resolveViewerLatinFont(font_list), font_list)
+    end
+    if not devanagari then
+        devanagari = ListFonts.resolveFontPath(ListFonts.resolveViewerDevanagariFont(font_list), font_list)
+    end
+    if not gujarati then
+        gujarati = ListFonts.resolveFontPath(ListFonts.resolveViewerGujaratiFont(font_list), font_list)
+    end
+
+    local resolved = {
+        latin = latin,
+        devanagari = devanagari,
+        gujarati = gujarati,
+    }
+    if not provided_list then
+        _viewer_fonts_cache = resolved
+    end
     return {
-        latin = ListFonts.resolveViewerLatinFont(font_list),
-        devanagari = ListFonts.resolveViewerDevanagariFont(font_list),
-        gujarati = ListFonts.resolveViewerGujaratiFont(font_list),
+        latin = resolved.latin,
+        devanagari = resolved.devanagari,
+        gujarati = resolved.gujarati,
     }
 end
 
@@ -414,6 +530,7 @@ function ListFonts._resetSessionForTests()
     _session.applied = false
     _session.injected_fallback = nil
     _session.hint_shown = false
+    ListFonts.clearViewerFontsCache()
 end
 
 ---Message when preferred Latin/Gujarati fonts are not installed (nil if OK).

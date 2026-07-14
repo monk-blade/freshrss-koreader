@@ -31,23 +31,52 @@ describe("FreshRSS list_fonts helpers", function()
         assert.truthy(css:find("FreshRSSLatin"))
         assert.truthy(css:find("FreshRSSDevanagari"))
         assert.truthy(css:find("FreshRSSGujarati"))
+        assert.truthy(css:find("url%('/fonts/Latin%.ttf'%)"))
         assert.truthy(css:find("font%-family: 'FreshRSSLatin', 'FreshRSSDevanagari', 'FreshRSSGujarati'"))
     end)
 
+    it("normalizes font paths for MuPDF css urls", function()
+        assert.equals("/mnt/us/koreader/fonts/Noto.ttf", ListFonts.absoluteFontPath("/mnt/us/koreader/fonts/Noto.ttf"))
+        assert.equals("/fonts/Roboto.ttf", ListFonts.absoluteFontPath("\\fonts\\Roboto.ttf"))
+    end)
+
+    it("resolves readable font paths with basename fallback", function()
+        local latin_path = os.tmpname() .. ".ttf"
+        local f = assert(io.open(latin_path, "wb"))
+        f:write("x")
+        f:close()
+        local base = latin_path:match("([^/]+)$")
+        local fonts = { latin_path, "/other/NotoSansDevanagari-Regular.ttf" }
+        assert.equals(latin_path, ListFonts.resolveFontPath(base, fonts))
+        assert.equals(latin_path, ListFonts.resolveFontPath(latin_path, fonts))
+        os.remove(latin_path)
+    end)
+
     it("resolves viewer fonts with saved settings", function()
+        local latin_path = os.tmpname() .. "-RobotoCondensed-Regular.ttf"
+        local dev_path = os.tmpname() .. "-NotoSansDevanagari-Regular.ttf"
+        local guj_path = os.tmpname() .. "-NotoSerifGujarati-Regular.ttf"
+        for _, p in ipairs({ latin_path, dev_path, guj_path }) do
+            local f = assert(io.open(p, "wb"))
+            f:write("x")
+            f:close()
+        end
         local fonts = {
-            "/fonts/RobotoCondensed-Regular.ttf",
-            "/fonts/NotoSansDevanagari-Regular.ttf",
-            "/fonts/NotoSerifGujarati-Regular.ttf",
+            latin_path,
+            dev_path,
+            guj_path,
         }
-        ListFonts.saveViewerLatinFont("/custom/Latin.ttf")
+        ListFonts.saveViewerLatinFont(latin_path)
         ListFonts.saveViewerDevanagariFont(nil)
         ListFonts.saveViewerGujaratiFont(nil)
         local resolved = ListFonts.resolveViewerFonts(fonts)
-        assert.equals("/custom/Latin.ttf", resolved.latin)
-        assert.equals("/fonts/NotoSansDevanagari-Regular.ttf", resolved.devanagari)
-        assert.equals("/fonts/NotoSerifGujarati-Regular.ttf", resolved.gujarati)
+        assert.equals(latin_path, resolved.latin)
+        assert.equals(dev_path, resolved.devanagari)
+        assert.equals(guj_path, resolved.gujarati)
         ListFonts.saveViewerLatinFont(nil)
+        os.remove(latin_path)
+        os.remove(dev_path)
+        os.remove(guj_path)
     end)
 
     it("detects Gujarati Unicode in titles", function()

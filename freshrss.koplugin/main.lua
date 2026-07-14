@@ -488,7 +488,7 @@ function Plugin:buildItemTable()
                     callback = function()
                         self:setBrowseState({ mode = "feed", feed_id = sid })
                         self:showCached(true)
-                        self:requestSync()
+                        -- Do not auto-sync on feed open — user taps FreshRSS icon to sync.
                     end,
                     hold_callback = function()
                         local now_hidden = Cache.toggleHiddenFeed(self.settings, sid)
@@ -532,7 +532,7 @@ function Plugin:buildItemTable()
                     callback = function()
                         self:setBrowseState({ mode = "label", label = label })
                         self:showCached(true)
-                        self:requestSync()
+                        -- Do not auto-sync on category open — user taps FreshRSS icon to sync.
                     end,
                 })
             end
@@ -1781,12 +1781,28 @@ function Plugin:openArticle(id, nav_ids)
     widget = widget_or_err
     self.viewer = widget
     UIManager:show(widget, "ui")
-    -- Viewer first, then optionally mark read and download images.
+    -- Paint first on Kindle, then light work, then network image fetch.
+    -- Synchronous Images.prepare() during open hung Paperwhite on first open.
+    UIManager:forceRePaint()
     UIManager:nextTick(function()
+        if self.viewer ~= widget then return end
         if mark_on_open then
             self.sync:applyAction(self:api(), id, "read", true)
         end
-        self:loadViewerImages(article, widget)
+        -- Apply already-cached images only (no network) for a fast second paint.
+        if widget.show_images then
+            local cached_map, cached_dir = Images.cachedMap(article.html or "", self.cache.root)
+            if next(cached_map) and (not widget.image_map or not next(widget.image_map)) then
+                local dir = Images.ensureDirectory(cached_dir or Images.directory(self.cache.root))
+                widget:applyImageMap(cached_map, dir)
+            end
+        end
+        -- Defer network downloads so MuPDF open finishes before HTTP work.
+        UIManager:scheduleIn(0.4, function()
+            if self.viewer == widget then
+                self:loadViewerImages(article, widget)
+            end
+        end)
     end)
 end
 

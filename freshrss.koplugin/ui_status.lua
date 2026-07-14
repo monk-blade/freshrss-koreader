@@ -45,7 +45,7 @@ function StatusStrip:init()
         local cancel_size = Screen:scaleBySize(20)
         table.insert(header_children, HorizontalSpan:new{ width = Size.span.horizontal_small })
         table.insert(header_children, IconButton:new{
-            icon = "notice-close",
+            icon = "close",
             width = cancel_size,
             height = cancel_size,
             padding = Size.padding.tiny,
